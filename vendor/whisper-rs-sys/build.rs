@@ -165,7 +165,7 @@ fn main() {
     if env::var("WHISPER_DONT_GENERATE_BINDINGS").is_ok() || target.contains("windows") {
         write_bundled_bindings(&out);
     } else {
-        let mut bindings = bindgen::Builder::default().header("wrapper.h");
+        let bindings = bindgen::Builder::default().header("wrapper.h");
 
         #[cfg(feature = "metal")]
         {

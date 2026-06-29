@@ -45,7 +45,10 @@ use crate::{
         finalize_pro_transcript, merge_incremental_transcript, sanitize_user_transcript,
         ProTranscriptOptions,
     },
-    voice_vault::{VoiceVaultDb, VoiceVaultError},
+    voice_vault::{
+        CreateVoiceVaultLogRequest, UpdateVoiceVaultLogRequest, VoiceVaultDb, VoiceVaultError,
+        VoiceVaultLog,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -689,9 +692,7 @@ fn final_decode_timeout(sample_count: usize, sample_rate: u32) -> Duration {
 fn play_pill_close_cue() {
     #[cfg(target_os = "windows")]
     unsafe {
-        use windows_sys::Win32::Media::Audio::{
-            PlaySoundA, SND_ASYNC, SND_MEMORY, SND_NODEFAULT,
-        };
+        use windows_sys::Win32::Media::Audio::{PlaySoundA, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 
         // SAFETY: HOTKEY_CUE_RELEASE_WAV is static WAV data for the process lifetime.
         PlaySoundA(
@@ -889,6 +890,7 @@ pub struct VoiceWaveController {
     permission_manager: Mutex<PermissionManager>,
     insertion_engine: Mutex<InsertionEngine>,
     history_manager: Arc<Mutex<HistoryManager>>,
+    voice_vault: VoiceVaultDb,
     billing_manager: Arc<Mutex<BillingManager>>,
     model_manager: Mutex<crate::model_manager::ModelManager>,
     dictionary_manager: Arc<Mutex<DictionaryManager>>,
@@ -963,7 +965,8 @@ impl VoiceWaveController {
         };
         let permission_manager = PermissionManager::new(&audio);
         let history_manager = HistoryManager::new()?;
-        VoiceVaultDb::new()?.initialize_schema()?;
+        let voice_vault = VoiceVaultDb::new()?;
+        voice_vault.initialize_schema()?;
         let billing_manager = BillingManager::new()?;
         let model_manager = crate::model_manager::ModelManager::new()?;
         let dictionary_manager = DictionaryManager::new()?;
@@ -992,6 +995,7 @@ impl VoiceWaveController {
             permission_manager: Mutex::new(permission_manager),
             insertion_engine: Mutex::new(InsertionEngine::default()),
             history_manager: Arc::new(Mutex::new(history_manager)),
+            voice_vault,
             billing_manager: Arc::new(Mutex::new(billing_manager)),
             model_manager: Mutex::new(model_manager),
             dictionary_manager: Arc::new(Mutex::new(dictionary_manager)),
@@ -1270,7 +1274,14 @@ impl VoiceWaveController {
         };
 
         let run_result = self
-            .run_dictation_flow(app.clone(), mode, session_id, trigger, cancel_token, stop_flag)
+            .run_dictation_flow(
+                app.clone(),
+                mode,
+                session_id,
+                trigger,
+                cancel_token,
+                stop_flag,
+            )
             .await;
         {
             let mut token_slot = self.cancel_token.lock().await;
@@ -2480,6 +2491,38 @@ impl VoiceWaveController {
         self.history_manager.lock().await.get_records(query)
     }
 
+    pub async fn create_voice_vault_log(
+        &self,
+        request: CreateVoiceVaultLogRequest,
+    ) -> Result<VoiceVaultLog, ControllerError> {
+        self.voice_vault
+            .create_log(request)
+            .map_err(ControllerError::from)
+    }
+
+    pub async fn update_voice_vault_log(
+        &self,
+        id: i64,
+        request: UpdateVoiceVaultLogRequest,
+    ) -> Result<VoiceVaultLog, ControllerError> {
+        self.voice_vault
+            .update_log(id, request)
+            .map_err(ControllerError::from)
+    }
+
+    pub async fn get_voice_vault_log(&self, id: i64) -> Result<VoiceVaultLog, ControllerError> {
+        self.voice_vault.get_log(id).map_err(ControllerError::from)
+    }
+
+    pub async fn list_voice_vault_logs(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<VoiceVaultLog>, ControllerError> {
+        self.voice_vault
+            .list_logs(limit)
+            .map_err(ControllerError::from)
+    }
+
     pub async fn search_session_history(
         &self,
         query: String,
@@ -2852,9 +2895,7 @@ impl VoiceWaveController {
                             None,
                         )
                         .await;
-                        let device_label = input_device
-                            .as_deref()
-                            .unwrap_or("system default");
+                        let device_label = input_device.as_deref().unwrap_or("system default");
                         let warmup_peak_msg = if threshold > 0.0 {
                             format!(
                                 " (warmup threshold {:.4}, full threshold {:.4})",
@@ -3956,8 +3997,8 @@ mod tests {
         asr_integrity_metrics, build_terminology_hint_from_texts, clamp_vad_threshold,
         classify_insertion_target, decode_mode_key, decode_mode_rank, derive_correction_candidates,
         effective_release_watchdog_threshold_ms, floor_decode_mode, insertion_method_key,
-        is_likely_low_quality_input_name, now_utc_ms, release_watchdog_recovered,
-        push_release_allowed, push_to_talk_release_decision,
+        is_likely_low_quality_input_name, now_utc_ms, push_release_allowed,
+        push_to_talk_release_decision, release_watchdog_recovered,
         should_reject_low_confidence_transcript_as_no_speech, DictationStartTrigger,
         PushReleaseDecision, MAX_VAD_THRESHOLD, MIN_VAD_THRESHOLD, RECOMMENDED_VAD_THRESHOLD,
     };
@@ -4164,11 +4205,8 @@ mod tests {
         // includes the deliberate post-release capture tail, so with a 350 ms
         // tail every utterance measured ~360 ms and a flat 220-300 ms
         // threshold flagged 200/200 dictations as watchdog recoveries.
-        let threshold = effective_release_watchdog_threshold_ms(
-            AudioQualityBand::Good,
-            12_000,
-            350,
-        );
+        let threshold =
+            effective_release_watchdog_threshold_ms(AudioQualityBand::Good, 12_000, 350);
         assert!(
             threshold > 350,
             "threshold ({threshold}) must exceed the configured release tail"
@@ -4176,10 +4214,7 @@ mod tests {
         // The typical healthy case must NOT count as a recovery...
         assert!(!release_watchdog_recovered(363, threshold));
         // ...while a genuine stall still must.
-        assert!(release_watchdog_recovered(
-            350 + 700,
-            threshold
-        ));
+        assert!(release_watchdog_recovered(350 + 700, threshold));
     }
 
     #[test]

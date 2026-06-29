@@ -56,6 +56,8 @@ use tauri::{
     Listener, LogicalSize, Manager, PhysicalPosition, Position, Size, State, WebviewUrl,
     WebviewWindowBuilder, WindowEvent,
 };
+#[cfg(feature = "desktop")]
+use voice_vault::{CreateVoiceVaultLogRequest, UpdateVoiceVaultLogRequest, VoiceVaultLog};
 
 #[cfg(feature = "desktop")]
 const PILL_WINDOW_LABEL: &str = "voicewave-pill";
@@ -847,6 +849,59 @@ async fn get_session_history(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+async fn create_voice_vault_log(
+    runtime: State<'_, RuntimeContext>,
+    request: CreateVoiceVaultLogRequest,
+) -> Result<VoiceVaultLog, String> {
+    runtime
+        .controller
+        .create_voice_vault_log(request)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn update_voice_vault_log(
+    runtime: State<'_, RuntimeContext>,
+    id: i64,
+    request: UpdateVoiceVaultLogRequest,
+) -> Result<VoiceVaultLog, String> {
+    runtime
+        .controller
+        .update_voice_vault_log(id, request)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn get_voice_vault_log(
+    runtime: State<'_, RuntimeContext>,
+    id: i64,
+) -> Result<VoiceVaultLog, String> {
+    runtime
+        .controller
+        .get_voice_vault_log(id)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn list_voice_vault_logs(
+    runtime: State<'_, RuntimeContext>,
+    limit: Option<usize>,
+) -> Result<Vec<VoiceVaultLog>, String> {
+    runtime
+        .controller
+        .list_voice_vault_logs(limit)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 async fn search_session_history(
     runtime: State<'_, RuntimeContext>,
     query: String,
@@ -1138,6 +1193,10 @@ pub fn run() {
             get_benchmark_results,
             recommend_model,
             get_session_history,
+            create_voice_vault_log,
+            update_voice_vault_log,
+            get_voice_vault_log,
+            list_voice_vault_logs,
             search_session_history,
             tag_session,
             toggle_star_session,

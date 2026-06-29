@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 const VOICE_VAULT_DB_FILE: &str = "voice_vault.db";
@@ -228,31 +229,32 @@ impl VoiceVaultDb {
         request: UpdateVoiceVaultLogRequest,
     ) -> Result<VoiceVaultLog, VoiceVaultError> {
         let connection = self.open_connection()?;
-        let current = self.get_log_with_connection(&connection, id)?;
         let transaction_status = request
             .transaction_status
-            .unwrap_or(current.transaction_status);
+            .as_ref()
+            .map(TransactionStatus::as_db_str);
 
-        connection.execute(
+        let changed_rows = connection.execute(
             r#"
             UPDATE voice_vault_logs
             SET
-              cleaned_text = ?1,
-              transformed_text = ?2,
-              final_edited_text = ?3,
-              transaction_status = ?4
+              cleaned_text = COALESCE(?1, cleaned_text),
+              transformed_text = COALESCE(?2, transformed_text),
+              final_edited_text = COALESCE(?3, final_edited_text),
+              transaction_status = COALESCE(?4, transaction_status)
             WHERE id = ?5
             "#,
             params![
-                request.cleaned_text.unwrap_or(current.cleaned_text),
-                request.transformed_text.unwrap_or(current.transformed_text),
-                request
-                    .final_edited_text
-                    .unwrap_or(current.final_edited_text),
-                transaction_status.as_db_str(),
+                request.cleaned_text.as_deref(),
+                request.transformed_text.as_deref(),
+                request.final_edited_text.as_deref(),
+                transaction_status,
                 id,
             ],
         )?;
+        if changed_rows == 0 {
+            return Err(VoiceVaultError::LogNotFound(id));
+        }
 
         self.get_log_with_connection(&connection, id)
     }
@@ -291,7 +293,9 @@ impl VoiceVaultDb {
     }
 
     fn open_connection(&self) -> Result<Connection, VoiceVaultError> {
-        Ok(Connection::open(&self.path)?)
+        let connection = Connection::open(&self.path)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        Ok(connection)
     }
 
     fn get_log_with_connection(
@@ -629,6 +633,25 @@ mod tests {
         vault.initialize_schema().expect("schema should initialize");
 
         let result = vault.get_log(404);
+
+        assert!(matches!(result, Err(VoiceVaultError::LogNotFound(404))));
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn update_log_returns_not_found_for_missing_id() {
+        let db_path = temp_db_path();
+        let vault = VoiceVaultDb::from_path(&db_path);
+        vault.initialize_schema().expect("schema should initialize");
+
+        let result = vault.update_log(
+            404,
+            UpdateVoiceVaultLogRequest {
+                cleaned_text: Some("missing".to_string()),
+                ..UpdateVoiceVaultLogRequest::default()
+            },
+        );
 
         assert!(matches!(result, Err(VoiceVaultError::LogNotFound(404))));
 
