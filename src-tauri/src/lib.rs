@@ -13,6 +13,7 @@ pub mod permissions;
 pub mod phase1;
 pub mod settings;
 pub mod transcript;
+pub mod voice_vault;
 
 #[cfg(feature = "desktop")]
 pub mod state;

@@ -45,6 +45,7 @@ use crate::{
         finalize_pro_transcript, merge_incremental_transcript, sanitize_user_transcript,
         ProTranscriptOptions,
     },
+    voice_vault::{VoiceVaultDb, VoiceVaultError},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -201,6 +202,8 @@ pub enum ControllerError {
     Billing(#[from] BillingError),
     #[error("diagnostics error: {0}")]
     Diagnostics(#[from] DiagnosticsError),
+    #[error("voice vault error: {0}")]
+    VoiceVault(#[from] VoiceVaultError),
     #[error("PRO_REQUIRED:{0}")]
     ProRequired(String),
     #[error("model not found: {0}")]
@@ -960,6 +963,7 @@ impl VoiceWaveController {
         };
         let permission_manager = PermissionManager::new(&audio);
         let history_manager = HistoryManager::new()?;
+        VoiceVaultDb::new()?.initialize_schema()?;
         let billing_manager = BillingManager::new()?;
         let model_manager = crate::model_manager::ModelManager::new()?;
         let dictionary_manager = DictionaryManager::new()?;
