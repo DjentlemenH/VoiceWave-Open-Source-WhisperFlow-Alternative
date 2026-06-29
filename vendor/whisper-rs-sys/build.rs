@@ -4,9 +4,56 @@ extern crate bindgen;
 
 use cmake::Config;
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+
+fn bundled_bindings_without_layout_tests() -> String {
+    let bindings = fs::read_to_string("src/bindings.rs").expect("Failed to read bindings.rs");
+    let mut output = String::with_capacity(bindings.len());
+    let mut lines = bindings.lines();
+
+    while let Some(line) = lines.next() {
+        if line
+            .trim_start()
+            .starts_with("#[allow(clippy::unnecessary_operation, clippy::identity_op)]")
+        {
+            let mut skipped = Vec::new();
+            skipped.push(line);
+
+            if let Some(next) = lines.next() {
+                skipped.push(next);
+                if next.trim_start().starts_with("const _: () = {") {
+                    for block_line in lines.by_ref() {
+                        if block_line.trim_start() == "};" {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            for skipped_line in skipped {
+                output.push_str(skipped_line);
+                output.push('\n');
+            }
+            continue;
+        }
+
+        output.push_str(line);
+        output.push('\n');
+    }
+
+    output
+}
+
+fn write_bundled_bindings(out: &std::path::Path) {
+    fs::write(
+        out.join("bindings.rs"),
+        bundled_bindings_without_layout_tests(),
+    )
+    .expect("Failed to write bundled bindings.rs");
+}
 
 fn main() {
     let target = env::var("TARGET").unwrap();
@@ -115,9 +162,8 @@ fn main() {
         });
     }
 
-    if env::var("WHISPER_DONT_GENERATE_BINDINGS").is_ok() {
-        let _: u64 = std::fs::copy("src/bindings.rs", out.join("bindings.rs"))
-            .expect("Failed to copy bindings.rs");
+    if env::var("WHISPER_DONT_GENERATE_BINDINGS").is_ok() || target.contains("windows") {
+        write_bundled_bindings(&out);
     } else {
         let mut bindings = bindgen::Builder::default().header("wrapper.h");
 
@@ -196,7 +242,9 @@ fn main() {
                 }
             };
             if let Some(ninja) = ninja_path {
-                config.generator("Ninja").define("CMAKE_MAKE_PROGRAM", &ninja);
+                config
+                    .generator("Ninja")
+                    .define("CMAKE_MAKE_PROGRAM", &ninja);
             }
         }
     }
