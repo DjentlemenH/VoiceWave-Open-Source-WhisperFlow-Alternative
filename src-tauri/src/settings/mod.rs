@@ -159,7 +159,72 @@ impl TranscriptRefinementMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkflowPromptPreset {
+    pub system_prompt: String,
+    pub temperature: f32,
+    pub max_tokens: u32,
+    pub timeout_ms: u64,
+}
+
+impl WorkflowPromptPreset {
+    fn new(system_prompt: &str, temperature: f32, max_tokens: u32, timeout_ms: u64) -> Self {
+        Self {
+            system_prompt: system_prompt.to_string(),
+            temperature,
+            max_tokens,
+            timeout_ms,
+        }
+    }
+}
+
+impl Default for WorkflowPromptPreset {
+    fn default() -> Self {
+        Self::new(CLEAN_REPLY_SYSTEM_PROMPT, 0.2, 768, 2_500)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkflowPromptPresets {
+    pub clean_reply: WorkflowPromptPreset,
+    pub planning: WorkflowPromptPreset,
+    pub code: WorkflowPromptPreset,
+    pub detailed_notes: WorkflowPromptPreset,
+}
+
+impl Default for WorkflowPromptPresets {
+    fn default() -> Self {
+        Self {
+            clean_reply: WorkflowPromptPreset::new(CLEAN_REPLY_SYSTEM_PROMPT, 0.2, 768, 2_500),
+            planning: WorkflowPromptPreset::new(PLANNING_SYSTEM_PROMPT, 0.2, 1_024, 3_500),
+            code: WorkflowPromptPreset::new(CODE_SYSTEM_PROMPT, 0.1, 1_024, 3_500),
+            detailed_notes: WorkflowPromptPreset::new(
+                DETAILED_NOTES_SYSTEM_PROMPT,
+                0.2,
+                1_536,
+                4_000,
+            ),
+        }
+    }
+}
+
+impl WorkflowPromptPresets {
+    pub fn preset_for_mode(&self, mode: TranscriptRefinementMode) -> Option<&WorkflowPromptPreset> {
+        match mode {
+            TranscriptRefinementMode::Raw => None,
+            TranscriptRefinementMode::Clean | TranscriptRefinementMode::Reply => {
+                Some(&self.clean_reply)
+            }
+            TranscriptRefinementMode::Planning => Some(&self.planning),
+            TranscriptRefinementMode::Code => Some(&self.code),
+            TranscriptRefinementMode::DetailedNotes => Some(&self.detailed_notes),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TranscriptRefinementSettings {
     pub enabled: bool,
@@ -169,6 +234,7 @@ pub struct TranscriptRefinementSettings {
     pub model: String,
     pub timeout_ms: u64,
     pub system_prompt: Option<String>,
+    pub workflow_presets: WorkflowPromptPresets,
 }
 
 impl Default for TranscriptRefinementSettings {
@@ -181,9 +247,18 @@ impl Default for TranscriptRefinementSettings {
             model: "llama3.2:3b".to_string(),
             timeout_ms: 2_500,
             system_prompt: None,
+            workflow_presets: WorkflowPromptPresets::default(),
         }
     }
 }
+
+pub const CLEAN_REPLY_SYSTEM_PROMPT: &str = "You are refining local dictation for a clean reply. Fix punctuation, remove verbal stutters and filler words, and correct obvious text anomalies. Strictly preserve slang, raw terminology, profanity, and Hunter's personal conversational tone. Never summarize. Return only valid JSON with keys cleaned_text, transformed_text, and final_edited_text.";
+
+pub const PLANNING_SYSTEM_PROMPT: &str = "You are refining local dictation into a planning note. Convert spoken thought streams into a clean structured markdown block with exactly these headers: Objective, Context, Decisions, Tasks, Unresolved Questions, Next Action. Preserve all substantive details and do not invent decisions. Return only valid JSON with keys cleaned_text, transformed_text, and final_edited_text.";
+
+pub const CODE_SYSTEM_PROMPT: &str = "You are refining local dictation into an actionable code or agent prompt. Protect literal Windows file paths, command flags, versions, identifiers, quoted strings, and precise technical jargon exactly as spoken. Do not normalize or reinterpret technical tokens. Return only valid JSON with keys cleaned_text, transformed_text, and final_edited_text.";
+
+pub const DETAILED_NOTES_SYSTEM_PROMPT: &str = "You are refining local dictation into detailed notes. Organize dense information into structured headings and clean text blocks while completely retaining all original substantive content. Do not summarize away details. Return only valid JSON with keys cleaned_text, transformed_text, and final_edited_text.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -335,6 +410,36 @@ pub fn normalize_pro_settings(settings: &mut VoiceWaveSettings) {
     if settings.transcript_refinement.model.trim().is_empty() {
         settings.transcript_refinement.model = TranscriptRefinementSettings::default().model;
     }
+    normalize_workflow_presets(&mut settings.transcript_refinement);
+}
+
+fn normalize_workflow_presets(settings: &mut TranscriptRefinementSettings) {
+    let defaults = WorkflowPromptPresets::default();
+    normalize_workflow_preset(
+        &mut settings.workflow_presets.clean_reply,
+        &defaults.clean_reply,
+    );
+    normalize_workflow_preset(&mut settings.workflow_presets.planning, &defaults.planning);
+    normalize_workflow_preset(&mut settings.workflow_presets.code, &defaults.code);
+    normalize_workflow_preset(
+        &mut settings.workflow_presets.detailed_notes,
+        &defaults.detailed_notes,
+    );
+}
+
+fn normalize_workflow_preset(preset: &mut WorkflowPromptPreset, default: &WorkflowPromptPreset) {
+    if preset.system_prompt.trim().is_empty() {
+        preset.system_prompt = default.system_prompt.clone();
+    }
+    if !preset.temperature.is_finite() {
+        preset.temperature = default.temperature;
+    }
+    preset.temperature = preset.temperature.clamp(0.0, 2.0);
+    if preset.max_tokens == 0 {
+        preset.max_tokens = default.max_tokens;
+    }
+    preset.max_tokens = preset.max_tokens.clamp(1, 32_768);
+    preset.timeout_ms = preset.timeout_ms.clamp(250, 30_000);
 }
 
 pub const LOCKED_TOGGLE_HOTKEY: &str = "Ctrl+Alt+X";
@@ -532,5 +637,126 @@ mod tests {
             settings.transcript_refinement.provider,
             TranscriptRefinementProviderKind::Ollama
         );
+    }
+
+    #[test]
+    fn workflow_presets_default_to_four_strict_backend_templates() {
+        let presets = WorkflowPromptPresets::default();
+
+        assert!(presets
+            .clean_reply
+            .system_prompt
+            .contains("Never summarize"));
+        assert!(presets
+            .planning
+            .system_prompt
+            .contains("Objective, Context, Decisions, Tasks, Unresolved Questions, Next Action"));
+        assert!(presets.code.system_prompt.contains("Windows file paths"));
+        assert!(presets
+            .detailed_notes
+            .system_prompt
+            .contains("retaining all original substantive content"));
+    }
+
+    #[test]
+    fn workflow_preset_for_mode_maps_reply_and_clean_to_clean_reply() {
+        let presets = WorkflowPromptPresets::default();
+
+        assert_eq!(
+            presets
+                .preset_for_mode(TranscriptRefinementMode::Clean)
+                .expect("clean preset")
+                .system_prompt,
+            presets.clean_reply.system_prompt
+        );
+        assert_eq!(
+            presets
+                .preset_for_mode(TranscriptRefinementMode::Reply)
+                .expect("reply preset")
+                .system_prompt,
+            presets.clean_reply.system_prompt
+        );
+        assert!(presets
+            .preset_for_mode(TranscriptRefinementMode::Raw)
+            .is_none());
+    }
+
+    #[test]
+    fn backward_compat_missing_workflow_presets_loads_defaults() {
+        let path = temp_settings_path();
+        let store = SettingsStore::from_path(path.clone());
+        let raw = r#"{
+            "activeModel": "fw-small.en",
+            "transcriptRefinement": {
+                "enabled": true,
+                "provider": "ollama",
+                "mode": "planning",
+                "endpointUrl": "http://127.0.0.1:11434/v1/chat/completions",
+                "model": "llama3.2:3b",
+                "timeoutMs": 2500
+            }
+        }"#;
+        std::fs::write(&path, raw).expect("write should succeed");
+
+        let loaded = store.load().expect("load should succeed");
+
+        assert_eq!(
+            loaded
+                .transcript_refinement
+                .workflow_presets
+                .planning
+                .system_prompt,
+            PLANNING_SYSTEM_PROMPT
+        );
+        assert_eq!(
+            loaded
+                .transcript_refinement
+                .workflow_presets
+                .code
+                .max_tokens,
+            1_024
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workflow_preset_tuning_is_clamped_on_load() {
+        let path = temp_settings_path();
+        let store = SettingsStore::from_path(path.clone());
+        let raw = r#"{
+            "transcriptRefinement": {
+                "workflowPresets": {
+                    "planning": {
+                        "systemPrompt": "",
+                        "temperature": 9.5,
+                        "maxTokens": 0,
+                        "timeoutMs": 50
+                    },
+                    "code": {
+                        "systemPrompt": "Keep C:\\Users\\Hunter\\repo and --flag literal.",
+                        "temperature": -1.0,
+                        "maxTokens": 999999,
+                        "timeoutMs": 999999
+                    }
+                }
+            }
+        }"#;
+        std::fs::write(&path, raw).expect("write should succeed");
+
+        let loaded = store.load().expect("load should succeed");
+        let planning = &loaded.transcript_refinement.workflow_presets.planning;
+        let code = &loaded.transcript_refinement.workflow_presets.code;
+
+        assert_eq!(planning.system_prompt, PLANNING_SYSTEM_PROMPT);
+        assert_eq!(planning.temperature, 2.0);
+        assert_eq!(planning.max_tokens, 1_024);
+        assert_eq!(planning.timeout_ms, 250);
+        assert_eq!(code.temperature, 0.0);
+        assert_eq!(code.max_tokens, 32_768);
+        assert_eq!(code.timeout_ms, 30_000);
+        assert!(code.system_prompt.contains("C:\\Users\\Hunter\\repo"));
+
+        let _ = std::fs::remove_file(path);
     }
 }

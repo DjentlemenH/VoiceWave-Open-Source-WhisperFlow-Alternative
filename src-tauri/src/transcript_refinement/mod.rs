@@ -1,6 +1,7 @@
 use crate::{
     settings::{
         TranscriptRefinementMode, TranscriptRefinementProviderKind, TranscriptRefinementSettings,
+        WorkflowPromptPreset, WorkflowPromptPresets,
     },
     voice_vault::VoiceVaultLogEntry,
 };
@@ -20,6 +21,10 @@ pub trait TextRefinementProvider: Send + Sync {
 pub struct TranscriptRefinementRequest {
     pub raw_text: String,
     pub mode: TranscriptRefinementMode,
+    pub system_prompt: String,
+    pub temperature: f32,
+    pub max_tokens: u32,
+    pub timeout_ms: u64,
     pub cancellation_token: CancellationToken,
 }
 
@@ -88,8 +93,6 @@ impl TextRefinementProvider for DisabledProvider {
 pub struct OpenAiCompatibleProvider {
     endpoint_url: String,
     model: String,
-    system_prompt: Option<String>,
-    request_timeout_ms: u64,
 }
 
 impl OpenAiCompatibleProvider {
@@ -97,16 +100,12 @@ impl OpenAiCompatibleProvider {
         Self {
             endpoint_url: settings.endpoint_url.clone(),
             model: settings.model.clone(),
-            system_prompt: settings.system_prompt.clone(),
-            request_timeout_ms: settings.timeout_ms.clamp(250, 30_000),
         }
     }
 
     fn refine_blocking(
         endpoint_url: String,
         model: String,
-        system_prompt: Option<String>,
-        request_timeout_ms: u64,
         request: TranscriptRefinementRequest,
     ) -> Result<TranscriptRefinementOutput, TextRefinementError> {
         if request.cancellation_token.is_cancelled() {
@@ -120,12 +119,13 @@ impl OpenAiCompatibleProvider {
 
         let payload = serde_json::json!({
             "model": model,
-            "temperature": 0.2,
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
             "stream": false,
             "messages": [
                 {
                     "role": "system",
-                    "content": system_prompt.unwrap_or_else(default_system_prompt),
+                    "content": request.system_prompt,
                 },
                 {
                     "role": "user",
@@ -134,7 +134,7 @@ impl OpenAiCompatibleProvider {
             ]
         });
 
-        let timeout = Duration::from_millis(request_timeout_ms);
+        let timeout = Duration::from_millis(request.timeout_ms);
         let connect_timeout = timeout.min(Duration::from_millis(1_000));
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(connect_timeout)
@@ -164,20 +164,12 @@ impl TextRefinementProvider for OpenAiCompatibleProvider {
     fn refine<'a>(&'a self, request: TranscriptRefinementRequest) -> RefinementFuture<'a> {
         let endpoint_url = self.endpoint_url.clone();
         let model = self.model.clone();
-        let system_prompt = self.system_prompt.clone();
-        let request_timeout_ms = self.request_timeout_ms;
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
-                Self::refine_blocking(
-                    endpoint_url,
-                    model,
-                    system_prompt,
-                    request_timeout_ms,
-                    request,
-                )
-            })
-            .await
-            .map_err(|err| TextRefinementError::Provider(format!("provider task failed: {err}")))?
+            tokio::task::spawn_blocking(move || Self::refine_blocking(endpoint_url, model, request))
+                .await
+                .map_err(|err| {
+                    TextRefinementError::Provider(format!("provider task failed: {err}"))
+                })?
         })
     }
 }
@@ -207,10 +199,15 @@ where
 {
     let processing_mode = settings.mode.processing_mode().to_string();
     let cancellation_token = CancellationToken::new();
-    let timeout_ms = settings.timeout_ms.clamp(250, 30_000);
+    let workflow_preset = active_workflow_preset(settings);
+    let timeout_ms = workflow_preset.timeout_ms;
     let request = TranscriptRefinementRequest {
         raw_text: raw_text.clone(),
         mode: settings.mode,
+        system_prompt: workflow_preset.system_prompt,
+        temperature: workflow_preset.temperature,
+        max_tokens: workflow_preset.max_tokens,
+        timeout_ms,
         cancellation_token: cancellation_token.clone(),
     };
 
@@ -268,8 +265,29 @@ fn fallback_outcome(
     }
 }
 
-fn default_system_prompt() -> String {
-    "You refine local dictation text for insertion into the user's active application. Return only valid JSON with keys cleaned_text, transformed_text, and final_edited_text. Do not add commentary.".to_string()
+fn active_workflow_preset(settings: &TranscriptRefinementSettings) -> WorkflowPromptPreset {
+    let defaults = WorkflowPromptPresets::default();
+    let default_preset = defaults
+        .preset_for_mode(settings.mode)
+        .unwrap_or(&defaults.clean_reply);
+    let mut preset = settings
+        .workflow_presets
+        .preset_for_mode(settings.mode)
+        .cloned()
+        .unwrap_or_else(|| default_preset.clone());
+    if preset.system_prompt.trim().is_empty() {
+        preset.system_prompt = default_preset.system_prompt.clone();
+    }
+    if !preset.temperature.is_finite() {
+        preset.temperature = default_preset.temperature;
+    }
+    preset.temperature = preset.temperature.clamp(0.0, 2.0);
+    if preset.max_tokens == 0 {
+        preset.max_tokens = default_preset.max_tokens;
+    }
+    preset.max_tokens = preset.max_tokens.clamp(1, 32_768);
+    preset.timeout_ms = preset.timeout_ms.clamp(250, 30_000);
+    preset
 }
 
 fn user_prompt(raw_text: &str, mode: TranscriptRefinementMode) -> String {
@@ -395,6 +413,7 @@ fn output_from_plain_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     struct StaticProvider {
         output: TranscriptRefinementOutput,
@@ -422,6 +441,25 @@ mod tests {
             Box::pin(async move {
                 request.cancellation_token.cancelled().await;
                 Err(TextRefinementError::Provider("cancelled".to_string()))
+            })
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct CaptureProvider {
+        request: Arc<Mutex<Option<TranscriptRefinementRequest>>>,
+    }
+
+    impl TextRefinementProvider for CaptureProvider {
+        fn refine<'a>(&'a self, request: TranscriptRefinementRequest) -> RefinementFuture<'a> {
+            let captured = self.request.clone();
+            Box::pin(async move {
+                *captured.lock().expect("capture lock should not poison") = Some(request);
+                Ok(TranscriptRefinementOutput {
+                    cleaned_text: "Cleaned".to_string(),
+                    transformed_text: "Transformed".to_string(),
+                    final_edited_text: "Final".to_string(),
+                })
             })
         }
     }
@@ -502,7 +540,13 @@ mod tests {
             enabled: true,
             provider: TranscriptRefinementProviderKind::OpenAiCompatible,
             mode: TranscriptRefinementMode::Clean,
-            timeout_ms: 250,
+            workflow_presets: WorkflowPromptPresets {
+                clean_reply: WorkflowPromptPreset {
+                    timeout_ms: 250,
+                    ..WorkflowPromptPresets::default().clean_reply
+                },
+                ..WorkflowPromptPresets::default()
+            },
             ..TranscriptRefinementSettings::default()
         };
 
@@ -538,6 +582,10 @@ mod tests {
         let request = TranscriptRefinementRequest {
             raw_text: "raw".to_string(),
             mode: TranscriptRefinementMode::Planning,
+            system_prompt: "Plan prompt".to_string(),
+            temperature: 0.2,
+            max_tokens: 1_024,
+            timeout_ms: 2_500,
             cancellation_token: CancellationToken::new(),
         };
 
@@ -563,5 +611,85 @@ mod tests {
         assert!(!is_local_endpoint(
             "http://192.168.1.10:11434/v1/chat/completions"
         ));
+    }
+
+    #[tokio::test]
+    async fn selected_workflow_profile_mutates_provider_request_payload() {
+        let settings = TranscriptRefinementSettings {
+            enabled: true,
+            provider: TranscriptRefinementProviderKind::OpenAiCompatible,
+            mode: TranscriptRefinementMode::Code,
+            workflow_presets: WorkflowPromptPresets {
+                code: WorkflowPromptPreset {
+                    system_prompt: "Protect H:\\Repositories\\VoiceWave and --exact-flag."
+                        .to_string(),
+                    temperature: 0.05,
+                    max_tokens: 2_048,
+                    timeout_ms: 4_250,
+                },
+                ..WorkflowPromptPresets::default()
+            },
+            ..TranscriptRefinementSettings::default()
+        };
+        let provider = CaptureProvider::default();
+
+        let _ = refine_transcript_with_provider(
+            &provider,
+            &settings,
+            "rewrite the command at H:\\Repositories\\VoiceWave with --exact-flag".to_string(),
+        )
+        .await;
+
+        let captured = provider
+            .request
+            .lock()
+            .expect("capture lock should not poison")
+            .clone()
+            .expect("request should be captured");
+        assert_eq!(captured.mode, TranscriptRefinementMode::Code);
+        assert_eq!(
+            captured.system_prompt,
+            "Protect H:\\Repositories\\VoiceWave and --exact-flag."
+        );
+        assert_eq!(captured.temperature, 0.05);
+        assert_eq!(captured.max_tokens, 2_048);
+        assert_eq!(captured.timeout_ms, 4_250);
+    }
+
+    #[tokio::test]
+    async fn reply_mode_uses_clean_reply_workflow_profile() {
+        let settings = TranscriptRefinementSettings {
+            enabled: true,
+            provider: TranscriptRefinementProviderKind::OpenAiCompatible,
+            mode: TranscriptRefinementMode::Reply,
+            workflow_presets: WorkflowPromptPresets {
+                clean_reply: WorkflowPromptPreset {
+                    system_prompt: "Reply cleanly but keep Hunter's tone.".to_string(),
+                    temperature: 0.3,
+                    max_tokens: 900,
+                    timeout_ms: 3_000,
+                },
+                ..WorkflowPromptPresets::default()
+            },
+            ..TranscriptRefinementSettings::default()
+        };
+        let provider = CaptureProvider::default();
+
+        let _ =
+            refine_transcript_with_provider(&provider, &settings, "yeah uh send that".to_string())
+                .await;
+
+        let captured = provider
+            .request
+            .lock()
+            .expect("capture lock should not poison")
+            .clone()
+            .expect("request should be captured");
+        assert_eq!(captured.mode, TranscriptRefinementMode::Reply);
+        assert_eq!(
+            captured.system_prompt,
+            "Reply cleanly but keep Hunter's tone."
+        );
+        assert_eq!(captured.max_tokens, 900);
     }
 }
