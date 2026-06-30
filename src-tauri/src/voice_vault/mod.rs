@@ -153,6 +153,38 @@ impl VoiceVaultDb {
         Ok(())
     }
 
+    pub fn get_log(&self, id: i64) -> Result<Option<VoiceVaultLogEntry>, VoiceVaultError> {
+        let connection = self.open_connection()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT
+              audio_file_path,
+              processing_mode,
+              raw_text,
+              cleaned_text,
+              transformed_text,
+              final_edited_text,
+              transaction_status
+            FROM voice_vault_logs
+            WHERE id = ?1
+            "#,
+        )?;
+        let mut rows = statement.query([id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+
+        Ok(Some(VoiceVaultLogEntry {
+            audio_file_path: row.get(0)?,
+            processing_mode: row.get(1)?,
+            raw_text: row.get(2)?,
+            cleaned_text: row.get(3)?,
+            transformed_text: row.get(4)?,
+            final_edited_text: row.get(5)?,
+            transaction_status: row.get(6)?,
+        }))
+    }
+
     fn open_connection(&self) -> Result<Connection, VoiceVaultError> {
         let connection = Connection::open(&self.path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
@@ -389,6 +421,36 @@ mod tests {
                 "final".to_string(),
                 "Accepted".to_string(),
             )
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn get_log_returns_inserted_entry_for_retry() {
+        let db_path = temp_db_path();
+        let vault = VoiceVaultDb::from_path(&db_path);
+        vault.initialize_schema().expect("schema should initialize");
+        let entry = VoiceVaultLogEntry {
+            audio_file_path: Some("H:\\clips\\retry.wav".to_string()),
+            processing_mode: "Planning".to_string(),
+            raw_text: "raw plan".to_string(),
+            cleaned_text: "clean plan".to_string(),
+            transformed_text: "structured plan".to_string(),
+            final_edited_text: "structured plan".to_string(),
+            transaction_status: "Pending".to_string(),
+        };
+        let id = vault.insert_log(&entry).expect("entry should insert");
+
+        let loaded = vault
+            .get_log(id)
+            .expect("entry should query")
+            .expect("entry should exist");
+
+        assert_eq!(loaded, entry);
+        assert_eq!(
+            vault.get_log(id + 1).expect("missing query should work"),
+            None
         );
 
         let _ = std::fs::remove_file(&db_path);

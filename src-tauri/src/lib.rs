@@ -12,6 +12,7 @@ pub mod model_manager;
 pub mod permissions;
 pub mod phase1;
 pub mod settings;
+pub mod target_context;
 pub mod transcript;
 pub mod transcript_refinement;
 pub mod voice_vault;
@@ -47,7 +48,7 @@ use settings::{
     AppProfileOverrides, CodeModeSettings, DomainPackId, FormatProfile, VoiceWaveSettings,
 };
 #[cfg(feature = "desktop")]
-use state::{DictationMode, VoiceWaveController, VoiceWaveSnapshot};
+use state::{DictationMode, StagedTranscriptEvent, VoiceWaveController, VoiceWaveSnapshot};
 #[cfg(feature = "desktop")]
 use std::sync::Arc;
 #[cfg(feature = "desktop")]
@@ -848,6 +849,20 @@ async fn get_session_history(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+async fn retry_refinement_from_history(
+    runtime: State<'_, RuntimeContext>,
+    log_id: i64,
+    workflow_override: Option<String>,
+) -> Result<StagedTranscriptEvent, String> {
+    runtime
+        .controller
+        .retry_refinement_from_history(log_id, workflow_override)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 async fn search_session_history(
     runtime: State<'_, RuntimeContext>,
     query: String,
@@ -1139,6 +1154,7 @@ pub fn run() {
             get_benchmark_results,
             recommend_model,
             get_session_history,
+            retry_refinement_from_history,
             search_session_history,
             tag_session,
             toggle_star_session,

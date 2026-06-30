@@ -41,6 +41,10 @@ use crate::{
         AppTargetClass, CodeModeSettings, DecodeMode, DomainPackId, FormatProfile, SettingsError,
         SettingsStore, VoiceWaveSettings, LOCKED_PUSH_TO_TALK_HOTKEY, LOCKED_TOGGLE_HOTKEY,
     },
+    target_context::{
+        active_target_context, evaluate_default_app_target_class, evaluate_default_mode,
+        TargetAppContext,
+    },
     transcript::{
         finalize_pro_transcript, merge_incremental_transcript, sanitize_user_transcript,
         ProTranscriptOptions,
@@ -690,9 +694,7 @@ fn final_decode_timeout(sample_count: usize, sample_rate: u32) -> Duration {
 fn play_pill_close_cue() {
     #[cfg(target_os = "windows")]
     unsafe {
-        use windows_sys::Win32::Media::Audio::{
-            PlaySoundA, SND_ASYNC, SND_MEMORY, SND_NODEFAULT,
-        };
+        use windows_sys::Win32::Media::Audio::{PlaySoundA, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 
         // SAFETY: HOTKEY_CUE_RELEASE_WAV is static WAV data for the process lifetime.
         PlaySoundA(
@@ -887,6 +889,17 @@ struct LiveRefinementLedger {
     refined_entry: VoiceVaultLogEntry,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedTranscriptEvent {
+    pub log_id: i64,
+    pub processing_mode: String,
+    pub raw_text: String,
+    pub cleaned_text: String,
+    pub transformed_text: String,
+    pub final_edited_text: String,
+}
+
 fn build_live_refinement_ledger(
     raw_decode_transcript: String,
     baseline_transcript: String,
@@ -915,13 +928,70 @@ fn build_live_refinement_ledger(
     }
 }
 
-fn record_live_refinement_ledger(voice_vault: &VoiceVaultDb, ledger: &LiveRefinementLedger) {
+fn record_live_refinement_ledger(
+    voice_vault: &VoiceVaultDb,
+    ledger: &LiveRefinementLedger,
+) -> Option<i64> {
     let voice_vault_log_id = voice_vault.insert_log(&ledger.initial_entry).ok();
     if let Some(log_id) = voice_vault_log_id {
         let _ = voice_vault.update_log(log_id, &ledger.refined_entry);
+        Some(log_id)
     } else {
-        let _ = voice_vault.insert_log(&ledger.refined_entry);
+        voice_vault.insert_log(&ledger.refined_entry).ok()
     }
+}
+
+fn pending_staged_entry(entry: &VoiceVaultLogEntry) -> VoiceVaultLogEntry {
+    let mut pending = entry.clone();
+    pending.transaction_status = "Pending".to_string();
+    pending
+}
+
+fn staged_transcript_event(log_id: i64, entry: &VoiceVaultLogEntry) -> StagedTranscriptEvent {
+    StagedTranscriptEvent {
+        log_id,
+        processing_mode: entry.processing_mode.clone(),
+        raw_text: entry.raw_text.clone(),
+        cleaned_text: entry.cleaned_text.clone(),
+        transformed_text: entry.transformed_text.clone(),
+        final_edited_text: entry.final_edited_text.clone(),
+    }
+}
+
+fn refinement_settings_for_target(
+    base: &VoiceWaveSettings,
+    target_context: Option<&TargetAppContext>,
+) -> VoiceWaveSettings {
+    let mut settings = base.clone();
+    if settings
+        .transcript_refinement
+        .automatic_profile_switching_enabled
+    {
+        if let Some(mode) = target_context.and_then(evaluate_default_mode) {
+            settings.transcript_refinement.mode = mode;
+        }
+    }
+    settings
+}
+
+fn refinement_settings_for_history_retry(
+    base: &VoiceWaveSettings,
+    historical_entry: &VoiceVaultLogEntry,
+    workflow_override: Option<&str>,
+) -> VoiceWaveSettings {
+    let mut settings = base.clone();
+    if let Some(mode) = workflow_override
+        .and_then(crate::settings::TranscriptRefinementMode::from_workflow_key)
+        .or_else(|| {
+            crate::settings::TranscriptRefinementMode::from_workflow_key(
+                &historical_entry.processing_mode,
+            )
+        })
+    {
+        settings.transcript_refinement.mode = mode;
+    }
+    settings.transcript_refinement.enabled = true;
+    settings
 }
 
 pub struct VoiceWaveController {
@@ -1296,6 +1366,24 @@ impl VoiceWaveController {
             crate::cue::play(crate::cue::CueSound::Open);
         }
 
+        let target_context_capture = {
+            let settings = self.settings.lock().await;
+            if settings
+                .transcript_refinement
+                .automatic_profile_switching_enabled
+            {
+                match active_target_context() {
+                    Ok(context) => (Some(context), false),
+                    Err(err) => {
+                        eprintln!("voicewave: target context capture failed: {err}");
+                        (None, true)
+                    }
+                }
+            } else {
+                (None, false)
+            }
+        };
+
         let session_id = self.session_counter.fetch_add(1, Ordering::Relaxed) + 1;
         {
             let mut active = self.active_session.lock().await;
@@ -1317,7 +1405,16 @@ impl VoiceWaveController {
         };
 
         let run_result = self
-            .run_dictation_flow(app.clone(), mode, session_id, trigger, cancel_token, stop_flag)
+            .run_dictation_flow(
+                app.clone(),
+                mode,
+                session_id,
+                trigger,
+                cancel_token,
+                stop_flag,
+                target_context_capture.0,
+                target_context_capture.1,
+            )
             .await;
         {
             let mut token_slot = self.cancel_token.lock().await;
@@ -2527,6 +2624,38 @@ impl VoiceWaveController {
         self.history_manager.lock().await.get_records(query)
     }
 
+    pub async fn retry_refinement_from_history(
+        &self,
+        log_id: i64,
+        workflow_override: Option<String>,
+    ) -> Result<StagedTranscriptEvent, ControllerError> {
+        let historical_entry = self.voice_vault.get_log(log_id)?.ok_or_else(|| {
+            ControllerError::Runtime(format!("voice vault log not found: {log_id}"))
+        })?;
+        let settings = self.settings.lock().await.clone();
+        let retry_settings = refinement_settings_for_history_retry(
+            &settings,
+            &historical_entry,
+            workflow_override.as_deref(),
+        );
+        let retry_outcome = refine_transcript(
+            &retry_settings.transcript_refinement,
+            historical_entry.raw_text.clone(),
+        )
+        .await;
+        let mut retry_entry = retry_outcome.to_voice_vault_entry(historical_entry.audio_file_path);
+        if retry_entry.cleaned_text.trim().is_empty() {
+            retry_entry.cleaned_text = historical_entry.cleaned_text;
+        }
+        if retry_entry.final_edited_text.trim().is_empty() {
+            retry_entry.final_edited_text = historical_entry.final_edited_text;
+        }
+        retry_entry.transaction_status = "Pending".to_string();
+        self.voice_vault.update_log(log_id, &retry_entry)?;
+
+        Ok(staged_transcript_event(log_id, &retry_entry))
+    }
+
     pub async fn search_session_history(
         &self,
         query: String,
@@ -2681,7 +2810,34 @@ impl VoiceWaveController {
     }
 
     fn active_profile_behavior(settings: &VoiceWaveSettings) -> AppProfileBehavior {
-        match settings.app_profile_overrides.active_target {
+        Self::profile_behavior_for_target_class(
+            settings,
+            settings.app_profile_overrides.active_target,
+        )
+    }
+
+    fn active_profile_behavior_for_context(
+        settings: &VoiceWaveSettings,
+        target_context: Option<&TargetAppContext>,
+    ) -> AppProfileBehavior {
+        if settings
+            .transcript_refinement
+            .automatic_profile_switching_enabled
+        {
+            if let Some(target_class) =
+                target_context.and_then(evaluate_default_app_target_class)
+            {
+                return Self::profile_behavior_for_target_class(settings, target_class);
+            }
+        }
+        Self::active_profile_behavior(settings)
+    }
+
+    fn profile_behavior_for_target_class(
+        settings: &VoiceWaveSettings,
+        target_class: AppTargetClass,
+    ) -> AppProfileBehavior {
+        match target_class {
             AppTargetClass::Editor => settings.app_profile_overrides.editor.clone(),
             AppTargetClass::Browser => settings.app_profile_overrides.browser.clone(),
             AppTargetClass::Collab => settings.app_profile_overrides.collab.clone(),
@@ -2697,6 +2853,8 @@ impl VoiceWaveController {
         trigger: DictationStartTrigger,
         cancel_token: CancellationToken,
         stop_flag: Arc<AtomicBool>,
+        target_context: Option<TargetAppContext>,
+        target_context_query_failed: bool,
     ) -> Result<(), ControllerError> {
         let flow_started = Instant::now();
         if mode == DictationMode::Fixture {
@@ -2899,9 +3057,7 @@ impl VoiceWaveController {
                             None,
                         )
                         .await;
-                        let device_label = input_device
-                            .as_deref()
-                            .unwrap_or("system default");
+                        let device_label = input_device.as_deref().unwrap_or("system default");
                         let warmup_peak_msg = if threshold > 0.0 {
                             format!(
                                 " (warmup threshold {:.4}, full threshold {:.4})",
@@ -3283,7 +3439,8 @@ impl VoiceWaveController {
                 .into_iter()
                 .map(|row| row.term)
                 .collect::<Vec<_>>();
-            let app_profile_behavior = Self::active_profile_behavior(&settings);
+            let app_profile_behavior =
+                Self::active_profile_behavior_for_context(&settings, target_context.as_ref());
             final_transcript = finalize_pro_transcript(
                 &merged_transcript,
                 &ProTranscriptOptions {
@@ -3343,13 +3500,30 @@ impl VoiceWaveController {
             return Ok(());
         }
 
-        let voice_vault_processing_mode = settings
+        let effective_settings = if target_context_query_failed
+            && settings
+                .transcript_refinement
+                .automatic_profile_switching_enabled
+        {
+            let mut fail_open_settings = settings.clone();
+            fail_open_settings.transcript_refinement.enabled = false;
+            fail_open_settings.transcript_refinement.mode =
+                crate::settings::TranscriptRefinementMode::Raw;
+            fail_open_settings
+        } else {
+            refinement_settings_for_target(&settings, target_context.as_ref())
+        };
+
+        let voice_vault_processing_mode = effective_settings
             .transcript_refinement
             .mode
             .processing_mode()
             .to_string();
-        let refinement_outcome =
-            refine_transcript(&settings.transcript_refinement, final_transcript.clone()).await;
+        let refinement_outcome = refine_transcript(
+            &effective_settings.transcript_refinement,
+            final_transcript.clone(),
+        )
+        .await;
         let live_refinement_ledger = build_live_refinement_ledger(
             raw_decode_transcript.clone(),
             final_transcript.clone(),
@@ -3357,7 +3531,34 @@ impl VoiceWaveController {
             refinement_outcome,
         );
         final_transcript = live_refinement_ledger.insert_text.clone();
-        record_live_refinement_ledger(&self.voice_vault, &live_refinement_ledger);
+        if effective_settings
+            .transcript_refinement
+            .requires_manual_approval
+        {
+            let pending_entry = pending_staged_entry(&live_refinement_ledger.refined_entry);
+            let log_id = self.voice_vault.insert_log(&pending_entry).map_err(|err| {
+                eprintln!("voicewave: staging ledger insert failed: {err}");
+                err
+            });
+            if let Ok(log_id) = log_id {
+                let _ = app.emit(
+                    "voicewave://transcript-staged",
+                    staged_transcript_event(log_id, &pending_entry),
+                );
+                self.set_session_state(session_id, DictationLifecycleState::Idle, None, None)
+                    .await;
+                self.update_state(
+                    &app,
+                    VoiceWaveHudState::Idle,
+                    Some("Dictation staged for approval.".to_string()),
+                )
+                .await;
+                return Ok(());
+            }
+            final_transcript = raw_decode_transcript.clone();
+        } else {
+            record_live_refinement_ledger(&self.voice_vault, &live_refinement_ledger);
+        }
 
         let post_started = Instant::now();
         let _ = app.emit(
@@ -4016,20 +4217,25 @@ fn percentile_index(len: usize, percentile: f32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        asr_integrity_metrics, build_terminology_hint_from_texts, clamp_vad_threshold,
-        build_live_refinement_ledger,
-        classify_insertion_target, decode_mode_key, decode_mode_rank, derive_correction_candidates,
-        effective_release_watchdog_threshold_ms, floor_decode_mode, insertion_method_key,
-        is_likely_low_quality_input_name, now_utc_ms, release_watchdog_recovered,
+        asr_integrity_metrics, build_live_refinement_ledger, build_terminology_hint_from_texts,
+        clamp_vad_threshold, classify_insertion_target, decode_mode_key, decode_mode_rank,
+        derive_correction_candidates, effective_release_watchdog_threshold_ms, floor_decode_mode,
+        insertion_method_key, is_likely_low_quality_input_name, now_utc_ms, pending_staged_entry,
         push_release_allowed, push_to_talk_release_decision, record_live_refinement_ledger,
-        should_reject_low_confidence_transcript_as_no_speech, DictationStartTrigger,
-        PushReleaseDecision, MAX_VAD_THRESHOLD, MIN_VAD_THRESHOLD, RECOMMENDED_VAD_THRESHOLD,
+        refinement_settings_for_history_retry, refinement_settings_for_target,
+        release_watchdog_recovered, should_reject_low_confidence_transcript_as_no_speech,
+        staged_transcript_event, DictationStartTrigger, PushReleaseDecision, MAX_VAD_THRESHOLD,
+        MIN_VAD_THRESHOLD, RECOMMENDED_VAD_THRESHOLD,
     };
     use crate::audio::AudioQualityBand;
     use crate::insertion::InsertionMethod;
-    use crate::settings::DecodeMode;
+    use crate::settings::{
+        AppProfileBehavior, DecodeMode, TranscriptRefinementMode, TranscriptRefinementProviderKind,
+        VoiceWaveSettings,
+    };
+    use crate::target_context::TargetAppContext;
     use crate::transcript_refinement::TranscriptRefinementOutcome;
-    use crate::voice_vault::VoiceVaultDb;
+    use crate::voice_vault::{VoiceVaultDb, VoiceVaultLogEntry};
     use std::time::Duration;
 
     #[test]
@@ -4095,6 +4301,138 @@ mod tests {
         record_live_refinement_ledger(&bad_db, &ledger);
 
         assert_eq!(ledger.insert_text, "Raw.");
+    }
+
+    #[test]
+    fn target_context_auto_switch_overrides_refinement_mode_without_mutating_base() {
+        let mut settings = VoiceWaveSettings::default();
+        settings.transcript_refinement.enabled = true;
+        settings.transcript_refinement.provider = TranscriptRefinementProviderKind::Ollama;
+        settings.transcript_refinement.mode = TranscriptRefinementMode::Planning;
+        settings
+            .transcript_refinement
+            .automatic_profile_switching_enabled = true;
+        let target_context = TargetAppContext {
+            process_exe: Some(
+                "C:\\Users\\Hunter\\AppData\\Local\\Programs\\cursor.exe".to_string(),
+            ),
+            window_title: Some("main.rs - Cursor".to_string()),
+        };
+
+        let effective = refinement_settings_for_target(&settings, Some(&target_context));
+
+        assert_eq!(
+            effective.transcript_refinement.mode,
+            TranscriptRefinementMode::Code
+        );
+        assert_eq!(
+            settings.transcript_refinement.mode,
+            TranscriptRefinementMode::Planning
+        );
+    }
+
+    #[test]
+    fn target_context_auto_switch_disabled_preserves_user_mode() {
+        let mut settings = VoiceWaveSettings::default();
+        settings.transcript_refinement.mode = TranscriptRefinementMode::Planning;
+        settings
+            .transcript_refinement
+            .automatic_profile_switching_enabled = false;
+        let target_context = TargetAppContext {
+            process_exe: Some("chrome.exe".to_string()),
+            window_title: Some("Chat".to_string()),
+        };
+
+        let effective = refinement_settings_for_target(&settings, Some(&target_context));
+
+        assert_eq!(
+            effective.transcript_refinement.mode,
+            TranscriptRefinementMode::Planning
+        );
+    }
+
+    #[test]
+    fn target_context_auto_switch_changes_app_profile_behavior() {
+        let mut settings = VoiceWaveSettings::default();
+        settings
+            .transcript_refinement
+            .automatic_profile_switching_enabled = true;
+        settings.app_profile_overrides.editor = AppProfileBehavior {
+            punctuation_aggressiveness: 2,
+            sentence_compactness: 1,
+            auto_list_formatting: true,
+        };
+        settings.app_profile_overrides.browser = AppProfileBehavior {
+            punctuation_aggressiveness: 0,
+            sentence_compactness: 2,
+            auto_list_formatting: false,
+        };
+        let browser_context = TargetAppContext {
+            process_exe: Some("chrome.exe".to_string()),
+            window_title: Some("ChatGPT".to_string()),
+        };
+
+        let behavior =
+            super::VoiceWaveController::active_profile_behavior_for_context(
+                &settings,
+                Some(&browser_context),
+            );
+
+        assert_eq!(behavior.punctuation_aggressiveness, 0);
+        assert_eq!(behavior.sentence_compactness, 2);
+        assert!(!behavior.auto_list_formatting);
+    }
+
+    #[test]
+    fn pending_staged_entry_marks_transaction_without_changing_text_versions() {
+        let entry = VoiceVaultLogEntry {
+            audio_file_path: None,
+            processing_mode: "Clean Reply".to_string(),
+            raw_text: "raw".to_string(),
+            cleaned_text: "clean".to_string(),
+            transformed_text: "transform".to_string(),
+            final_edited_text: "final".to_string(),
+            transaction_status: "Accepted".to_string(),
+        };
+
+        let pending = pending_staged_entry(&entry);
+        let event = staged_transcript_event(42, &pending);
+
+        assert_eq!(pending.transaction_status, "Pending");
+        assert_eq!(pending.raw_text, entry.raw_text);
+        assert_eq!(pending.cleaned_text, entry.cleaned_text);
+        assert_eq!(event.log_id, 42);
+        assert_eq!(event.final_edited_text, "final");
+    }
+
+    #[test]
+    fn history_retry_settings_use_override_or_historical_processing_mode() {
+        let mut settings = VoiceWaveSettings::default();
+        settings.transcript_refinement.mode = TranscriptRefinementMode::Planning;
+        settings.transcript_refinement.enabled = false;
+        let entry = VoiceVaultLogEntry {
+            audio_file_path: None,
+            processing_mode: "Code".to_string(),
+            raw_text: "raw".to_string(),
+            cleaned_text: String::new(),
+            transformed_text: String::new(),
+            final_edited_text: String::new(),
+            transaction_status: "Pending".to_string(),
+        };
+
+        let historical = refinement_settings_for_history_retry(&settings, &entry, None);
+        let overridden =
+            refinement_settings_for_history_retry(&settings, &entry, Some("Detailed Notes"));
+
+        assert!(historical.transcript_refinement.enabled);
+        assert_eq!(
+            historical.transcript_refinement.mode,
+            TranscriptRefinementMode::Code
+        );
+        assert_eq!(
+            overridden.transcript_refinement.mode,
+            TranscriptRefinementMode::DetailedNotes
+        );
     }
 
     #[test]
@@ -4281,11 +4619,8 @@ mod tests {
         // includes the deliberate post-release capture tail, so with a 350 ms
         // tail every utterance measured ~360 ms and a flat 220-300 ms
         // threshold flagged 200/200 dictations as watchdog recoveries.
-        let threshold = effective_release_watchdog_threshold_ms(
-            AudioQualityBand::Good,
-            12_000,
-            350,
-        );
+        let threshold =
+            effective_release_watchdog_threshold_ms(AudioQualityBand::Good, 12_000, 350);
         assert!(
             threshold > 350,
             "threshold ({threshold}) must exceed the configured release tail"
@@ -4293,10 +4628,7 @@ mod tests {
         // The typical healthy case must NOT count as a recovery...
         assert!(!release_watchdog_recovered(363, threshold));
         // ...while a genuine stall still must.
-        assert!(release_watchdog_recovered(
-            350 + 700,
-            threshold
-        ));
+        assert!(release_watchdog_recovered(350 + 700, threshold));
     }
 
     #[test]

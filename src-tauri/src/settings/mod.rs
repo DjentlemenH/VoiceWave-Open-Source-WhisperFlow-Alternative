@@ -153,8 +153,25 @@ impl TranscriptRefinementMode {
             Self::Clean => "Clean",
             Self::Planning => "Planning",
             Self::Code => "Code",
-            Self::Reply => "Reply",
+            Self::Reply => "Clean Reply",
             Self::DetailedNotes => "Detailed Notes",
+        }
+    }
+
+    pub fn from_workflow_key(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase().replace(['_', '-'], " ");
+        match normalized
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .as_str()
+        {
+            "raw" => Some(Self::Raw),
+            "clean" | "clean reply" | "reply" => Some(Self::Reply),
+            "planning" | "plan" => Some(Self::Planning),
+            "code" | "agent prompt" | "code agent prompt" => Some(Self::Code),
+            "detailed notes" | "notes" | "detailed" => Some(Self::DetailedNotes),
+            _ => None,
         }
     }
 }
@@ -230,6 +247,8 @@ pub struct TranscriptRefinementSettings {
     pub enabled: bool,
     pub provider: TranscriptRefinementProviderKind,
     pub mode: TranscriptRefinementMode,
+    pub automatic_profile_switching_enabled: bool,
+    pub requires_manual_approval: bool,
     pub endpoint_url: String,
     pub model: String,
     pub timeout_ms: u64,
@@ -243,6 +262,8 @@ impl Default for TranscriptRefinementSettings {
             enabled: false,
             provider: TranscriptRefinementProviderKind::Disabled,
             mode: TranscriptRefinementMode::Raw,
+            automatic_profile_switching_enabled: false,
+            requires_manual_approval: false,
             endpoint_url: "http://127.0.0.1:11434/v1/chat/completions".to_string(),
             model: "llama3.2:3b".to_string(),
             timeout_ms: 2_500,
@@ -682,6 +703,35 @@ mod tests {
     }
 
     #[test]
+    fn workflow_key_parser_accepts_user_facing_names() {
+        assert_eq!(
+            TranscriptRefinementMode::from_workflow_key("Clean Reply"),
+            Some(TranscriptRefinementMode::Reply)
+        );
+        assert_eq!(
+            TranscriptRefinementMode::from_workflow_key("agent-prompt"),
+            Some(TranscriptRefinementMode::Code)
+        );
+        assert_eq!(
+            TranscriptRefinementMode::from_workflow_key("detailed_notes"),
+            Some(TranscriptRefinementMode::DetailedNotes)
+        );
+        assert_eq!(TranscriptRefinementMode::from_workflow_key("unknown"), None);
+    }
+
+    #[test]
+    fn staging_and_auto_profile_flags_default_to_fail_open_false() {
+        let settings = VoiceWaveSettings::default();
+
+        assert!(
+            !settings
+                .transcript_refinement
+                .automatic_profile_switching_enabled
+        );
+        assert!(!settings.transcript_refinement.requires_manual_approval);
+    }
+
+    #[test]
     fn backward_compat_missing_workflow_presets_loads_defaults() {
         let path = temp_settings_path();
         let store = SettingsStore::from_path(path.clone());
@@ -708,6 +758,12 @@ mod tests {
                 .system_prompt,
             PLANNING_SYSTEM_PROMPT
         );
+        assert!(
+            !loaded
+                .transcript_refinement
+                .automatic_profile_switching_enabled
+        );
+        assert!(!loaded.transcript_refinement.requires_manual_approval);
         assert_eq!(
             loaded
                 .transcript_refinement
