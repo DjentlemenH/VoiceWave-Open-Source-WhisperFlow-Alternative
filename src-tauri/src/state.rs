@@ -3,6 +3,10 @@ use crate::{
         analyze_captured_segments, AudioCaptureService, AudioError, AudioQualityBand,
         AudioQualityReport, CaptureOptions, VadConfig,
     },
+    audio_archive::{
+        now_utc_ms_for_archive, spawn_archive_audio_for_log, spawn_rejected_audio_cleanup,
+        AudioArchive,
+    },
     benchmark::{
         self, BenchmarkRequest, BenchmarkRun, ModelRecommendation, RecommendationConstraints,
     },
@@ -1004,6 +1008,7 @@ pub struct VoiceWaveController {
     insertion_engine: Mutex<InsertionEngine>,
     history_manager: Arc<Mutex<HistoryManager>>,
     voice_vault: VoiceVaultDb,
+    audio_archive: AudioArchive,
     billing_manager: Arc<Mutex<BillingManager>>,
     model_manager: Mutex<crate::model_manager::ModelManager>,
     dictionary_manager: Arc<Mutex<DictionaryManager>>,
@@ -1080,6 +1085,8 @@ impl VoiceWaveController {
         let history_manager = HistoryManager::new()?;
         let voice_vault = VoiceVaultDb::new()?;
         voice_vault.initialize_schema()?;
+        let audio_archive = AudioArchive::new();
+        spawn_rejected_audio_cleanup(audio_archive.clone(), voice_vault.clone());
         let billing_manager = BillingManager::new()?;
         let model_manager = crate::model_manager::ModelManager::new()?;
         let dictionary_manager = DictionaryManager::new()?;
@@ -1109,6 +1116,7 @@ impl VoiceWaveController {
             insertion_engine: Mutex::new(InsertionEngine::default()),
             history_manager: Arc::new(Mutex::new(history_manager)),
             voice_vault,
+            audio_archive,
             billing_manager: Arc::new(Mutex::new(billing_manager)),
             model_manager: Mutex::new(model_manager),
             dictionary_manager: Arc::new(Mutex::new(dictionary_manager)),
@@ -2670,6 +2678,9 @@ impl VoiceWaveController {
             entry.final_edited_text = final_text;
         }
         self.voice_vault.update_log(log_id, &entry)?;
+        if entry.transaction_status.eq_ignore_ascii_case("Rejected") {
+            spawn_rejected_audio_cleanup(self.audio_archive.clone(), self.voice_vault.clone());
+        }
         Ok(())
     }
 
@@ -3536,6 +3547,14 @@ impl VoiceWaveController {
             .mode
             .processing_mode()
             .to_string();
+        let audio_archive_plan = if mode == DictationMode::Microphone {
+            Some(
+                self.audio_archive
+                    .plan_for_session(session_id, now_utc_ms_for_archive()),
+            )
+        } else {
+            None
+        };
         let refinement_outcome = refine_transcript(
             &effective_settings.transcript_refinement,
             final_transcript.clone(),
@@ -3558,6 +3577,16 @@ impl VoiceWaveController {
                 err
             });
             if let Ok(log_id) = log_id {
+                if let Some(plan) = audio_archive_plan.clone() {
+                    spawn_archive_audio_for_log(
+                        self.audio_archive.clone(),
+                        self.voice_vault.clone(),
+                        log_id,
+                        plan,
+                        source_samples.clone(),
+                        self.audio.target_sample_rate,
+                    );
+                }
                 let _ = app.emit(
                     "voicewave://transcript-staged",
                     staged_transcript_event(log_id, &pending_entry),
@@ -3574,7 +3603,20 @@ impl VoiceWaveController {
             }
             final_transcript = raw_decode_transcript.clone();
         } else {
-            record_live_refinement_ledger(&self.voice_vault, &live_refinement_ledger);
+            if let Some(log_id) =
+                record_live_refinement_ledger(&self.voice_vault, &live_refinement_ledger)
+            {
+                if let Some(plan) = audio_archive_plan {
+                    spawn_archive_audio_for_log(
+                        self.audio_archive.clone(),
+                        self.voice_vault.clone(),
+                        log_id,
+                        plan,
+                        source_samples.clone(),
+                        self.audio.target_sample_rate,
+                    );
+                }
+            }
         }
 
         let post_started = Instant::now();

@@ -153,6 +153,49 @@ impl VoiceVaultDb {
         Ok(())
     }
 
+    pub fn update_audio_file_path(
+        &self,
+        id: i64,
+        audio_file_path: &str,
+    ) -> Result<(), VoiceVaultError> {
+        let connection = self.open_connection()?;
+        connection.execute(
+            "UPDATE voice_vault_logs SET audio_file_path = ?1 WHERE id = ?2",
+            params![normalize_optional_text(Some(audio_file_path)), id],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_audio_file_path(&self, id: i64) -> Result<(), VoiceVaultError> {
+        let connection = self.open_connection()?;
+        connection.execute(
+            "UPDATE voice_vault_logs SET audio_file_path = NULL WHERE id = ?1",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    pub fn rejected_audio_paths_older_than_hours(
+        &self,
+        hours: i64,
+    ) -> Result<Vec<(i64, String)>, VoiceVaultError> {
+        let connection = self.open_connection()?;
+        let threshold = format!("-{} hours", hours.max(0));
+        let mut statement = connection.prepare(
+            r#"
+            SELECT id, audio_file_path
+            FROM voice_vault_logs
+            WHERE transaction_status = 'Rejected'
+              AND audio_file_path IS NOT NULL
+              AND TRIM(audio_file_path) <> ''
+              AND timestamp <= datetime('now', ?1)
+            "#,
+        )?;
+        let rows = statement.query_map([threshold], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(VoiceVaultError::Sqlite)
+    }
+
     pub fn get_log(&self, id: i64) -> Result<Option<VoiceVaultLogEntry>, VoiceVaultError> {
         let connection = self.open_connection()?;
         let mut statement = connection.prepare(

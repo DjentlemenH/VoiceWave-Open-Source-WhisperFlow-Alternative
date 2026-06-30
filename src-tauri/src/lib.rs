@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod audio_archive;
 pub mod benchmark;
 pub mod billing;
 pub mod cue;
