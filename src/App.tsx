@@ -1,8 +1,10 @@
 import {
+  Check,
   ChevronDown,
   CircleHelp,
   Crown,
   Palette,
+  RefreshCcw,
   Search,
   Sparkles,
   X
@@ -37,6 +39,7 @@ import type {
   DictionaryTerm,
   FormatProfile,
   RetentionPolicy,
+  TranscriptRefinementMode,
   VoiceWaveSettings
 } from "./types/voicewave";
 
@@ -44,6 +47,20 @@ type OverlayPanel = "style" | "settings" | "help" | "profile" | "auth";
 type ProToolsMode = "default" | "coding" | "writing" | "study";
 type AuthMode = "signin" | "signup";
 type SetupModelChoice = "fw-small.en" | "fw-large-v3";
+
+const VOICE_VAULT_MODES: Array<{ value: TranscriptRefinementMode; label: string; description: string }> = [
+  { value: "raw", label: "Raw", description: "Whisper output without LLM cleanup" },
+  { value: "reply", label: "Clean Reply", description: "Punctuation and filler cleanup" },
+  { value: "planning", label: "Planning", description: "Structured task planning" },
+  { value: "code", label: "Code", description: "Agent-ready technical prompt" }
+];
+
+const STAGING_RETRY_OPTIONS = [
+  { value: "Clean Reply", label: "Clean Reply" },
+  { value: "Planning", label: "Planning" },
+  { value: "Code", label: "Code" },
+  { value: "Detailed Notes", label: "Detailed Notes" }
+];
 
 interface DemoProfile {
   name: string;
@@ -341,7 +358,11 @@ function App() {
   const [setupModelChoice, setSetupModelChoice] = useState<SetupModelChoice>("fw-small.en");
   const [setupModelPending, setSetupModelPending] = useState(false);
   const [setupModelError, setSetupModelError] = useState<string | null>(null);
+  const [stagedEditedText, setStagedEditedText] = useState("");
+  const [stagedRetryWorkflow, setStagedRetryWorkflow] = useState("Clean Reply");
+  const [stagingActionPending, setStagingActionPending] = useState<"accept" | "retry" | "reject" | null>(null);
   const {
+    acceptStagedTranscript,
     activeState,
     approveDictionaryQueueEntry,
     benchmarkResults,
@@ -385,6 +406,7 @@ function App() {
     runDictation,
     searchHistory,
     sessionHistory,
+    setTranscriptRefinementMode,
     setAppProfiles,
     setCodeModeSettings,
     setDiagnosticsOptIn,
@@ -402,13 +424,16 @@ function App() {
     addDictionaryTerm,
     resetVadThreshold,
     settings,
+    stagedTranscript,
     switchToRecommendedInput,
     recommendedVadThreshold,
     snapshot,
     stopDictation,
     tauriAvailable,
     updateRetentionPolicy,
-    refreshEntitlement
+    refreshEntitlement,
+    retryStagedTranscript,
+    rejectStagedTranscript
   } = useVoiceWave();
 
   const status = useMemo<DictationState>(() => activeState, [activeState]);
@@ -432,6 +457,20 @@ function App() {
   const lastCloudSentenceRef = useRef<string | null>(null);
   const activeProToolsMode = useMemo(() => detectProToolsMode(settings), [settings]);
   const displayedProToolsMode = modeApplyPending ?? activeProToolsMode;
+  const activeVoiceVaultMode = settings.transcriptRefinement.mode;
+  const automaticProfileLabel = settings.transcriptRefinement.automaticProfileSwitchingEnabled
+    ? "Auto profile On"
+    : "Auto profile Off";
+  const stagedDisplayText = useMemo(
+    () =>
+      stagedTranscript
+        ? stagedTranscript.finalEditedText ||
+          stagedTranscript.transformedText ||
+          stagedTranscript.cleanedText ||
+          stagedTranscript.rawText
+        : "",
+    [stagedTranscript]
+  );
   const proStatusLabel = isOwnerOverride ? "Owner Pro (Device Override)" : "Release Offer Active";
   const releaseOfferHeadline = "Pro is unlocked for every workspace during this initial release.";
   const releaseOfferLine = entitlement.plan.offerCopy || "Initial release offer: Pro is included for everyone.";
@@ -444,8 +483,8 @@ function App() {
   const isDemoAuthenticated = Boolean(demoProfile);
   const profileDisplayName = demoProfile?.name ?? "Workspace";
   const profileStatusLabel = demoProfile
-    ? `${isPro ? "Pro" : "Free"} workspace${cloudUserId ? " (cloud)" : ""}`
-    : "Guest mode";
+    ? `${isPro ? "Pro" : "Free"} workspace${cloudUserId ? " (cloud)" : ""} · ${automaticProfileLabel}`
+    : `Guest mode · ${automaticProfileLabel}`;
   const recentSentences = useMemo(
     () =>
       cloudUserId
@@ -488,6 +527,15 @@ function App() {
       setActiveNav("pro");
     }
   }, [activeNav, isPro]);
+
+  useEffect(() => {
+    setStagedEditedText(stagedDisplayText);
+    if (stagedTranscript) {
+      setActiveNav("staging");
+      const matchingRetry = STAGING_RETRY_OPTIONS.find((option) => option.value === stagedTranscript.processingMode);
+      setStagedRetryWorkflow(matchingRetry?.value ?? "Clean Reply");
+    }
+  }, [stagedDisplayText, stagedTranscript]);
 
   useEffect(() => {
     if (activeNav === "sessions") {
@@ -796,6 +844,40 @@ function App() {
     }
   };
 
+  const applyVoiceVaultMode = async (mode: TranscriptRefinementMode) => {
+    await setTranscriptRefinementMode(mode);
+  };
+
+  const handleAcceptStagedTranscript = async () => {
+    setStagingActionPending("accept");
+    try {
+      await acceptStagedTranscript(stagedEditedText);
+    } finally {
+      setStagingActionPending(null);
+    }
+  };
+
+  const handleRetryStagedTranscript = async () => {
+    setStagingActionPending("retry");
+    try {
+      const next = await retryStagedTranscript(stagedRetryWorkflow);
+      if (next) {
+        setStagedEditedText(next.finalEditedText || next.transformedText || next.cleanedText || next.rawText);
+      }
+    } finally {
+      setStagingActionPending(null);
+    }
+  };
+
+  const handleRejectStagedTranscript = async () => {
+    setStagingActionPending("reject");
+    try {
+      await rejectStagedTranscript();
+    } finally {
+      setStagingActionPending(null);
+    }
+  };
+
   useEffect(() => {
     if (!activeOverlay) {
       return;
@@ -933,6 +1015,47 @@ function App() {
                 pushToTalkHotkey={settings.pushToTalkHotkey}
                 isPro={isPro}
               />
+              <section className="vw-panel mt-6">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="vw-kicker">Voice Vault</p>
+                    <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Workflow Mode</h3>
+                    <p className="mt-1 text-sm text-[#71717A]">
+                      Choose how the next transcript is refined before insertion.
+                    </p>
+                  </div>
+                  <span
+                    className={`vw-chip ${
+                      settings.transcriptRefinement.automaticProfileSwitchingEnabled ? "vw-chip-accent" : ""
+                    }`}
+                  >
+                    {automaticProfileLabel}
+                  </span>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-4">
+                  {VOICE_VAULT_MODES.map((mode) => {
+                    const isActive = activeVoiceVaultMode === mode.value;
+                    return (
+                      <button
+                        key={mode.value}
+                        type="button"
+                        className={`vw-mode-card rounded-2xl border px-3 py-3 text-left ${
+                          isActive ? "vw-pro-mode-card-active" : "vw-pro-mode-card"
+                        }`}
+                        onClick={() => void applyVoiceVaultMode(mode.value)}
+                        aria-pressed={isActive}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-semibold text-[#09090B]">{mode.label}</span>
+                          {isActive && <Check size={15} className="shrink-0 text-[#18181B]" aria-hidden="true" />}
+                        </div>
+                        <p className="mt-1 text-xs text-[#71717A]">{mode.description}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
             </>
           )}
 
@@ -1255,6 +1378,108 @@ function App() {
               )}
               </section>
             </>
+          )}
+
+          {activeNav === "staging" && (
+            <section className="vw-panel vw-panel-soft">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="vw-kicker">Voice Vault</p>
+                  <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Staging Sandbox</h3>
+                  <p className="mt-1 text-sm text-[#71717A]">
+                    Review transcripts held by manual approval before they reach the target cursor.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <span
+                    className={`vw-chip ${
+                      settings.transcriptRefinement.requiresManualApproval ? "vw-chip-accent" : ""
+                    }`}
+                  >
+                    Approval {settings.transcriptRefinement.requiresManualApproval ? "On" : "Off"}
+                  </span>
+                  <span className="vw-chip">{automaticProfileLabel}</span>
+                </div>
+              </div>
+
+              {!stagedTranscript ? (
+                <div className="mt-5 rounded-2xl border border-dashed border-[#D4D4D8] bg-white px-4 py-8 text-center">
+                  <p className="text-sm font-semibold text-[#09090B]">No staged transcript waiting.</p>
+                  <p className="mt-1 text-xs text-[#71717A]">
+                    Turn on manual approval in backend settings to route new dictation here.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <span className="vw-chip">Log #{stagedTranscript.logId}</span>
+                    <span className="vw-chip">Mode {stagedTranscript.processingMode}</span>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div className="rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                      <p className="text-sm font-semibold text-[#09090B]">Raw Whisper Text</p>
+                      <div className="mt-3 min-h-[260px] whitespace-pre-wrap rounded-xl border border-[#E4E4E7] bg-[#FAFAFA] px-3 py-3 text-sm leading-6 text-[#18181B]">
+                        {stagedTranscript.rawText}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                      <p className="text-sm font-semibold text-[#09090B]">Edited Output</p>
+                      <textarea
+                        value={stagedEditedText}
+                        onChange={(event) => setStagedEditedText(event.target.value)}
+                        className="mt-3 min-h-[260px] w-full resize-y rounded-xl border border-[#E4E4E7] bg-white px-3 py-3 text-sm leading-6 text-[#09090B] outline-none transition focus:border-[#18181B]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3 md:flex-row md:items-center md:justify-between">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={stagedRetryWorkflow}
+                        onChange={(event) => setStagedRetryWorkflow(event.target.value)}
+                        className="rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                      >
+                        {STAGING_RETRY_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="vw-btn-secondary"
+                        onClick={() => void handleRetryStagedTranscript()}
+                        disabled={stagingActionPending !== null}
+                      >
+                        <RefreshCcw size={14} aria-hidden="true" />
+                        Retry
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="vw-btn-danger"
+                        onClick={() => void handleRejectStagedTranscript()}
+                        disabled={stagingActionPending !== null}
+                      >
+                        Reject
+                      </button>
+                      <button
+                        type="button"
+                        className="vw-btn-primary vw-action-button"
+                        onClick={() => void handleAcceptStagedTranscript()}
+                        disabled={stagingActionPending !== null || stagedEditedText.trim().length === 0}
+                      >
+                        Accept
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </section>
           )}
 
           {activeNav === "sessions" && (

@@ -37,7 +37,9 @@ import type {
   HistoryExportResult,
   SessionHistoryQuery,
   SessionHistoryRecord,
+  StagedTranscriptEvent,
   TranscriptEvent,
+  VoiceVaultTransactionStatus,
   UndoResult,
   VoiceWaveSettings,
   VoiceWaveSnapshot,
@@ -85,6 +87,16 @@ export async function listenVoicewaveTranscript(
   }
   const { listen } = await import("@tauri-apps/api/event");
   return listen("voicewave://transcript", (event: Event<TranscriptEvent>) => callback(event.payload));
+}
+
+export async function listenVoicewaveTranscriptStaged(
+  callback: (payload: StagedTranscriptEvent) => void
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("voicewave://transcript-staged", (event: Event<StagedTranscriptEvent>) => callback(event.payload));
 }
 
 export async function listenVoicewaveInsertion(
@@ -359,6 +371,28 @@ export async function recommendModel(
 
 export async function getSessionHistory(query?: SessionHistoryQuery): Promise<SessionHistoryRecord[]> {
   return invokeVoicewave<SessionHistoryRecord[]>("get_session_history", { query: query ?? null });
+}
+
+export async function retryRefinementFromHistory(
+  logId: number,
+  workflowOverride?: string | null
+): Promise<StagedTranscriptEvent> {
+  return invokeVoicewave<StagedTranscriptEvent>("retry_refinement_from_history", {
+    logId,
+    workflowOverride: workflowOverride ?? null
+  });
+}
+
+export async function updateVoiceVaultLogStatus(
+  logId: number,
+  transactionStatus: VoiceVaultTransactionStatus,
+  finalEditedText?: string | null
+): Promise<void> {
+  await invokeVoicewave<void>("update_voice_vault_log_status", {
+    logId,
+    transactionStatus,
+    finalEditedText: finalEditedText ?? null
+  });
 }
 
 export async function searchSessionHistory(

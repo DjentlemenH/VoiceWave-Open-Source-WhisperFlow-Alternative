@@ -3,6 +3,7 @@ import type { ThemeConfig } from "./types";
 import {
   Crown,
   Cpu,
+  ClipboardCheck,
   FileText,
   HelpCircle,
   Home,
@@ -102,6 +103,7 @@ export const THEMES: Record<string, ThemeConfig> = {
 export const NAV_ITEMS_TOP = [
   { id: "home", label: "Home", icon: Home },
   { id: "models", label: "Models", icon: Cpu },
+  { id: "staging", label: "Staging", icon: ClipboardCheck },
   { id: "dictionary", label: "Dictionary", icon: FileText },
   { id: "pro", label: "Pro", icon: Crown },
   { id: "pro-tools", label: "Pro Tools", icon: Zap }

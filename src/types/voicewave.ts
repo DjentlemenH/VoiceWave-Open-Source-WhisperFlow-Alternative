@@ -11,6 +11,9 @@ export type FormatProfile = "default" | "academic" | "technical" | "concise" | "
 export type DomainPackId = "coding" | "student" | "productivity";
 export type AppTargetClass = "editor" | "browser" | "collab" | "desktop";
 export type CodeCasingStyle = "preserve" | "camelCase" | "snakeCase" | "pascalCase";
+export type TranscriptRefinementMode = "raw" | "clean" | "planning" | "code" | "reply" | "detailedNotes";
+export type TranscriptRefinementProviderKind = "disabled" | "ollama" | "openAiCompatible";
+export type VoiceVaultTransactionStatus = "Pending" | "Accepted" | "Edited" | "Rejected";
 
 export interface AppProfileBehavior {
   punctuationAggressiveness: number;
@@ -33,6 +36,35 @@ export interface CodeModeSettings {
   wrapInFencedBlock: boolean;
 }
 
+export interface WorkflowPromptPreset {
+  systemPrompt: string;
+  temperature: number;
+  maxTokens: number;
+  timeoutMs: number;
+}
+
+export interface WorkflowPromptPresets {
+  cleanReply: WorkflowPromptPreset;
+  planning: WorkflowPromptPreset;
+  code: WorkflowPromptPreset;
+  detailedNotes: WorkflowPromptPreset;
+}
+
+export interface TranscriptRefinementSettings {
+  enabled: boolean;
+  provider: TranscriptRefinementProviderKind;
+  endpointUrl: string;
+  model: string;
+  apiKey: string | null;
+  mode: TranscriptRefinementMode;
+  timeoutMs: number;
+  temperature: number;
+  maxTokens: number;
+  automaticProfileSwitchingEnabled: boolean;
+  requiresManualApproval: boolean;
+  workflowPresets: WorkflowPromptPresets;
+}
+
 export interface VoiceWaveSettings {
   inputDevice: string | null;
   activeModel: string;
@@ -50,6 +82,7 @@ export interface VoiceWaveSettings {
   appProfileOverrides: AppProfileOverrides;
   codeMode: CodeModeSettings;
   proPostProcessingEnabled: boolean;
+  transcriptRefinement: TranscriptRefinementSettings;
 }
 
 export interface VoiceWaveSnapshot {
@@ -63,6 +96,15 @@ export interface TranscriptEvent {
   text: string;
   isFinal: boolean;
   elapsedMs: number;
+}
+
+export interface StagedTranscriptEvent {
+  logId: number;
+  processingMode: string;
+  rawText: string;
+  cleanedText: string;
+  transformedText: string;
+  finalEditedText: string;
 }
 
 export interface VoiceWaveStateEvent {

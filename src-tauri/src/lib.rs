@@ -863,6 +863,21 @@ async fn retry_refinement_from_history(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+async fn update_voice_vault_log_status(
+    runtime: State<'_, RuntimeContext>,
+    log_id: i64,
+    transaction_status: String,
+    final_edited_text: Option<String>,
+) -> Result<(), String> {
+    runtime
+        .controller
+        .update_voice_vault_log_status(log_id, transaction_status, final_edited_text)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 async fn search_session_history(
     runtime: State<'_, RuntimeContext>,
     query: String,
@@ -1155,6 +1170,7 @@ pub fn run() {
             recommend_model,
             get_session_history,
             retry_refinement_from_history,
+            update_voice_vault_log_status,
             search_session_history,
             tag_session,
             toggle_star_session,

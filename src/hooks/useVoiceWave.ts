@@ -26,6 +26,7 @@ import {
   listenVoicewavePermission,
   listenVoicewaveState,
   listenVoicewaveTranscript,
+  listenVoicewaveTranscriptStaged,
   listInstalledModels,
   listInputDevices,
   listModelCatalog,
@@ -40,6 +41,7 @@ import {
   rejectDictionaryEntry,
   removeDictionaryTerm,
   requestMicrophoneAccess,
+  retryRefinementFromHistory,
   restorePurchase as restorePurchaseCommand,
   resumeModelDownload,
   searchSessionHistory as searchSessionHistoryCommand,
@@ -64,7 +66,8 @@ import {
   triggerHotkeyAction,
   undoLastInsertion,
   updateHotkeyConfig,
-  updateSettings
+  updateSettings,
+  updateVoiceVaultLogStatus
 } from "../lib/tauri";
 import type {
   AppProfileOverrides,
@@ -97,7 +100,9 @@ import type {
   HistoryExportPreset,
   HistoryExportResult,
   SessionHistoryRecord,
+  StagedTranscriptEvent,
   LatencyBreakdownEvent,
+  TranscriptRefinementMode,
   VoiceWaveHudState,
   VoiceWaveSettings,
   VoiceWaveSnapshot
@@ -122,6 +127,50 @@ const LEGACY_MODEL_IDS = ["tiny.en", "base.en", "small.en", "medium.en"] as cons
 function isSupportedModelId(modelId: string): boolean {
   return SUPPORTED_MODEL_IDS.includes(modelId as (typeof SUPPORTED_MODEL_IDS)[number]);
 }
+
+const fallbackTranscriptRefinement: VoiceWaveSettings["transcriptRefinement"] = {
+  enabled: false,
+  provider: "disabled",
+  endpointUrl: "http://127.0.0.1:11434/v1/chat/completions",
+  model: "llama3.2:3b",
+  apiKey: null,
+  mode: "raw",
+  timeoutMs: 1200,
+  temperature: 0.2,
+  maxTokens: 512,
+  automaticProfileSwitchingEnabled: false,
+  requiresManualApproval: false,
+  workflowPresets: {
+    cleanReply: {
+      systemPrompt:
+        "Fix punctuation, remove verbal filler, and correct obvious transcription anomalies. Preserve slang, raw terminology, profanity, and the speaker's tone. Never summarize.",
+      temperature: 0.2,
+      maxTokens: 512,
+      timeoutMs: 1200
+    },
+    planning: {
+      systemPrompt:
+        "Convert the spoken thought stream into markdown sections: Objective, Context, Decisions, Tasks, Unresolved Questions, Next Action.",
+      temperature: 0.2,
+      maxTokens: 768,
+      timeoutMs: 1600
+    },
+    code: {
+      systemPrompt:
+        "Turn natural speech into an actionable technical prompt. Preserve Windows file paths, command flags, versions, and exact technical jargon literally.",
+      temperature: 0.1,
+      maxTokens: 768,
+      timeoutMs: 1600
+    },
+    detailedNotes: {
+      systemPrompt:
+        "Organize dense spoken information into structured headings and clean text blocks while retaining all substantive content.",
+      temperature: 0.2,
+      maxTokens: 1024,
+      timeoutMs: 1800
+    }
+  }
+};
 
 const fallbackSettings: VoiceWaveSettings = {
   inputDevice: null,
@@ -150,7 +199,8 @@ const fallbackSettings: VoiceWaveSettings = {
     preferredCasing: "preserve",
     wrapInFencedBlock: false
   },
-  proPostProcessingEnabled: false
+  proPostProcessingEnabled: false,
+  transcriptRefinement: fallbackTranscriptRefinement
 };
 
 const fallbackSnapshot: VoiceWaveSnapshot = {
@@ -391,6 +441,36 @@ function normalizeActiveModel(activeModel: string): string {
   return "fw-small.en";
 }
 
+function normalizeTranscriptRefinement(
+  value: Partial<VoiceWaveSettings["transcriptRefinement"]> | undefined
+): VoiceWaveSettings["transcriptRefinement"] {
+  const presets = value?.workflowPresets ?? fallbackTranscriptRefinement.workflowPresets;
+  return {
+    ...fallbackTranscriptRefinement,
+    ...value,
+    provider: value?.provider ?? fallbackTranscriptRefinement.provider,
+    mode: value?.mode ?? fallbackTranscriptRefinement.mode,
+    workflowPresets: {
+      cleanReply: {
+        ...fallbackTranscriptRefinement.workflowPresets.cleanReply,
+        ...presets.cleanReply
+      },
+      planning: {
+        ...fallbackTranscriptRefinement.workflowPresets.planning,
+        ...presets.planning
+      },
+      code: {
+        ...fallbackTranscriptRefinement.workflowPresets.code,
+        ...presets.code
+      },
+      detailedNotes: {
+        ...fallbackTranscriptRefinement.workflowPresets.detailedNotes,
+        ...presets.detailedNotes
+      }
+    }
+  };
+}
+
 function normalizeSettings(settings: VoiceWaveSettings): VoiceWaveSettings {
   return {
     ...settings,
@@ -405,6 +485,7 @@ function normalizeSettings(settings: VoiceWaveSettings): VoiceWaveSettings {
     appProfileOverrides: settings.appProfileOverrides ?? fallbackSettings.appProfileOverrides,
     codeMode: settings.codeMode ?? fallbackSettings.codeMode,
     proPostProcessingEnabled: settings.proPostProcessingEnabled ?? false,
+    transcriptRefinement: normalizeTranscriptRefinement(settings.transcriptRefinement),
     toggleHotkey: LOCKED_TOGGLE_HOTKEY,
     pushToTalkHotkey: LOCKED_PUSH_TO_TALK_HOTKEY
   };
@@ -505,6 +586,7 @@ export function useVoiceWave() {
   const [lastHistoryExport, setLastHistoryExport] = useState<HistoryExportResult | null>(null);
   const [recentInsertions, setRecentInsertions] = useState<RecentInsertion[]>([]);
   const [lastInsertion, setLastInsertion] = useState<InsertResult | null>(null);
+  const [stagedTranscript, setStagedTranscript] = useState<StagedTranscriptEvent | null>(null);
   const [lastHotkeyEvent, setLastHotkeyEvent] = useState<HotkeyEvent | null>(null);
 
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogItem[]>(fallbackModelCatalog);
@@ -1672,6 +1754,98 @@ export function useVoiceWave() {
     [refreshPhase3Data, tauriAvailable]
   );
 
+  const setTranscriptRefinementMode = useCallback(
+    async (mode: TranscriptRefinementMode) => {
+      const nextSettings = normalizeSettings({
+        ...settings,
+        transcriptRefinement: {
+          ...settings.transcriptRefinement,
+          mode,
+          enabled: mode !== "raw" ? true : settings.transcriptRefinement.enabled
+        }
+      });
+      if (!tauriAvailable) {
+        setSettings(nextSettings);
+        return nextSettings;
+      }
+      try {
+        const saved = normalizeSettings(await updateSettings(nextSettings));
+        setSettings(saved);
+        return saved;
+      } catch (modeErr) {
+        setError(modeErr instanceof Error ? modeErr.message : "Failed to update workflow mode.");
+        throw modeErr;
+      }
+    },
+    [settings, tauriAvailable]
+  );
+
+  const acceptStagedTranscript = useCallback(
+    async (editedText: string) => {
+      if (!stagedTranscript) {
+        return null;
+      }
+      const text = editedText.trim() ? editedText : stagedTranscript.finalEditedText || stagedTranscript.rawText;
+      if (!tauriAvailable) {
+        setStagedTranscript(null);
+        return null;
+      }
+      try {
+        const result = await insertText({
+          text,
+          targetApp: null,
+          preferClipboard: settings.preferClipboardFallback
+        });
+        await updateVoiceVaultLogStatus(stagedTranscript.logId, "Accepted", text);
+        setLastInsertion(result);
+        setStagedTranscript(null);
+        void refreshRecentInsertions();
+        return result;
+      } catch (acceptErr) {
+        setError(acceptErr instanceof Error ? acceptErr.message : "Failed to accept staged transcript.");
+        throw acceptErr;
+      }
+    },
+    [refreshRecentInsertions, settings.preferClipboardFallback, stagedTranscript, tauriAvailable]
+  );
+
+  const retryStagedTranscript = useCallback(
+    async (workflowOverride: string | null) => {
+      if (!stagedTranscript) {
+        return null;
+      }
+      if (!tauriAvailable) {
+        return stagedTranscript;
+      }
+      try {
+        const next = await retryRefinementFromHistory(stagedTranscript.logId, workflowOverride);
+        setStagedTranscript(next);
+        return next;
+      } catch (retryErr) {
+        setError(retryErr instanceof Error ? retryErr.message : "Failed to retry staged transcript.");
+        throw retryErr;
+      }
+    },
+    [stagedTranscript, tauriAvailable]
+  );
+
+  const rejectStagedTranscript = useCallback(async () => {
+    if (!stagedTranscript) {
+      return;
+    }
+    if (!tauriAvailable) {
+      setStagedTranscript(null);
+      return;
+    }
+    try {
+      await updateVoiceVaultLogStatus(stagedTranscript.logId, "Rejected", stagedTranscript.finalEditedText);
+      setStagedTranscript(null);
+    } catch (rejectErr) {
+      setError(rejectErr instanceof Error ? rejectErr.message : "Failed to reject staged transcript.");
+      throw rejectErr;
+    }
+  }, [stagedTranscript, tauriAvailable]);
+
   useEffect(() => {
     if (!tauriAvailable) {
       setSessionHistory([
@@ -1702,6 +1876,7 @@ export function useVoiceWave() {
     let micLevelUnlisten: (() => void) | null = null;
     let audioQualityUnlisten: (() => void) | null = null;
     let latencyUnlisten: (() => void) | null = null;
+    let stagedTranscriptUnlisten: (() => void) | null = null;
 
     void (async () => {
       try {
@@ -1756,6 +1931,10 @@ export function useVoiceWave() {
           lastPartial: event.isFinal ? prev.lastPartial : event.text,
           lastFinal: event.isFinal ? event.text : prev.lastFinal
         }));
+      });
+
+      stagedTranscriptUnlisten = await listenVoicewaveTranscriptStaged((event) => {
+        setStagedTranscript(event);
       });
 
       insertionUnlisten = await listenVoicewaveInsertion((result) => {
@@ -1886,6 +2065,9 @@ export function useVoiceWave() {
       }
       if (latencyUnlisten) {
         latencyUnlisten();
+      }
+      if (stagedTranscriptUnlisten) {
+        stagedTranscriptUnlisten();
       }
       if (tauriAvailable) {
         void stopMicLevelMonitor();
@@ -2113,6 +2295,7 @@ export function useVoiceWave() {
     lastHistoryExport,
     recentInsertions,
     lastInsertion,
+    stagedTranscript,
     lastHotkeyEvent,
     modelCatalog,
     installedModels,
@@ -2139,6 +2322,7 @@ export function useVoiceWave() {
     setReleaseTailMs,
     setDecodeMode,
     setFormatProfile,
+    setTranscriptRefinementMode,
     setDomainPacks,
     setAppProfiles,
     setCodeModeSettings,
@@ -2152,6 +2336,9 @@ export function useVoiceWave() {
     runAudioQualityDiagnostic,
     undoInsertion,
     insertFinalTranscript,
+    acceptStagedTranscript,
+    retryStagedTranscript,
+    rejectStagedTranscript,
     installModel,
     cancelModelInstall,
     pauseModelInstall,

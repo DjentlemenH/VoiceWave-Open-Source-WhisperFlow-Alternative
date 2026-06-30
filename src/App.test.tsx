@@ -130,8 +130,48 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
         preferredCasing: "preserve",
         wrapInFencedBlock: false
       },
-      proPostProcessingEnabled: false
+      proPostProcessingEnabled: false,
+      transcriptRefinement: {
+        enabled: false,
+        provider: "disabled",
+        endpointUrl: "http://127.0.0.1:11434/v1/chat/completions",
+        model: "llama3.2:3b",
+        apiKey: null,
+        mode: "raw",
+        timeoutMs: 1200,
+        temperature: 0.2,
+        maxTokens: 512,
+        automaticProfileSwitchingEnabled: false,
+        requiresManualApproval: false,
+        workflowPresets: {
+          cleanReply: {
+            systemPrompt: "Clean reply prompt",
+            temperature: 0.2,
+            maxTokens: 512,
+            timeoutMs: 1200
+          },
+          planning: {
+            systemPrompt: "Planning prompt",
+            temperature: 0.2,
+            maxTokens: 768,
+            timeoutMs: 1600
+          },
+          code: {
+            systemPrompt: "Code prompt",
+            temperature: 0.1,
+            maxTokens: 768,
+            timeoutMs: 1600
+          },
+          detailedNotes: {
+            systemPrompt: "Detailed notes prompt",
+            temperature: 0.2,
+            maxTokens: 1024,
+            timeoutMs: 1800
+          }
+        }
+      }
     },
+    stagedTranscript: null,
     switchToRecommendedInput: vi.fn(),
     recommendedVadThreshold: 0.014,
     snapshot: {
@@ -144,6 +184,10 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
     tauriAvailable: false,
     undoInsertion: vi.fn(),
     updateHotkeys: vi.fn(),
+    acceptStagedTranscript: vi.fn(),
+    retryStagedTranscript: vi.fn(),
+    rejectStagedTranscript: vi.fn(),
+    setTranscriptRefinementMode: vi.fn(),
     refreshEntitlement: vi.fn(),
     updateRetentionPolicy: vi.fn(),
     ...overrides
@@ -347,6 +391,81 @@ describe("App navigation and phase three panels", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "Sign In / Sign Up" })).not.toBeInTheDocument();
     });
+  });
+
+  it("updates the active voice vault workflow from the home mode controls", async () => {
+    const setTranscriptRefinementMode = vi.fn();
+    const useVoiceWaveSpy = vi
+      .spyOn(hookModule, "useVoiceWave")
+      .mockReturnValue(
+        buildHookMock({
+          setTranscriptRefinementMode
+        }) as any
+      );
+
+    render(<App />);
+    expect(screen.getByText("Workflow Mode")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Code Agent-ready technical prompt/i }));
+    expect(setTranscriptRefinementMode).toHaveBeenCalledWith("code");
+
+    useVoiceWaveSpy.mockRestore();
+  });
+
+  it("renders staged transcript review actions", async () => {
+    const acceptStagedTranscript = vi.fn();
+    const retryStagedTranscript = vi.fn().mockResolvedValue({
+      logId: 42,
+      processingMode: "Code",
+      rawText: "open the repo and check the thing",
+      cleanedText: "Open the repo and check the thing.",
+      transformedText: "Inspect the repository and verify the requested behavior.",
+      finalEditedText: "Inspect the repository and verify the requested behavior."
+    });
+    const rejectStagedTranscript = vi.fn();
+    const useVoiceWaveSpy = vi
+      .spyOn(hookModule, "useVoiceWave")
+      .mockReturnValue(
+        buildHookMock({
+          stagedTranscript: {
+            logId: 42,
+            processingMode: "Planning",
+            rawText: "open the repo and check the thing",
+            cleanedText: "Open the repo and check the thing.",
+            transformedText: "Objective: Check the repo.",
+            finalEditedText: "Objective: Check the repo."
+          },
+          settings: {
+            ...(buildHookMock().settings as any),
+            transcriptRefinement: {
+              ...(buildHookMock().settings as any).transcriptRefinement,
+              requiresManualApproval: true
+            }
+          },
+          acceptStagedTranscript,
+          retryStagedTranscript,
+          rejectStagedTranscript
+        }) as any
+      );
+
+    render(<App />);
+    expect(screen.getByText("Staging Sandbox")).toBeInTheDocument();
+    expect(screen.getByText("open the repo and check the thing")).toBeInTheDocument();
+
+    const editedOutput = screen.getByDisplayValue("Objective: Check the repo.");
+    fireEvent.change(editedOutput, { target: { value: "Objective: Check the repo.\nNext Action: Run checks." } });
+
+    fireEvent.click(screen.getByRole("button", { name: /Retry/i }));
+    await waitFor(() => expect(retryStagedTranscript).toHaveBeenCalledWith("Planning"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    await waitFor(() =>
+      expect(acceptStagedTranscript).toHaveBeenCalledWith("Inspect the repository and verify the requested behavior.")
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    await waitFor(() => expect(rejectStagedTranscript).toHaveBeenCalledTimes(1));
+
+    useVoiceWaveSpy.mockRestore();
   });
 
   it("applies demo sign-in locally and reflects account details in profile", async () => {

@@ -2656,6 +2656,23 @@ impl VoiceWaveController {
         Ok(staged_transcript_event(log_id, &retry_entry))
     }
 
+    pub async fn update_voice_vault_log_status(
+        &self,
+        log_id: i64,
+        transaction_status: String,
+        final_edited_text: Option<String>,
+    ) -> Result<(), ControllerError> {
+        let mut entry = self.voice_vault.get_log(log_id)?.ok_or_else(|| {
+            ControllerError::Runtime(format!("voice vault log not found: {log_id}"))
+        })?;
+        entry.transaction_status = transaction_status.trim().to_string();
+        if let Some(final_text) = final_edited_text {
+            entry.final_edited_text = final_text;
+        }
+        self.voice_vault.update_log(log_id, &entry)?;
+        Ok(())
+    }
+
     pub async fn search_session_history(
         &self,
         query: String,
