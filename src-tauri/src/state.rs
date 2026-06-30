@@ -45,7 +45,8 @@ use crate::{
         finalize_pro_transcript, merge_incremental_transcript, sanitize_user_transcript,
         ProTranscriptOptions,
     },
-    voice_vault::{VoiceVaultDb, VoiceVaultError},
+    transcript_refinement::refine_transcript,
+    voice_vault::{VoiceVaultDb, VoiceVaultError, VoiceVaultLogEntry},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -889,6 +890,7 @@ pub struct VoiceWaveController {
     permission_manager: Mutex<PermissionManager>,
     insertion_engine: Mutex<InsertionEngine>,
     history_manager: Arc<Mutex<HistoryManager>>,
+    voice_vault: VoiceVaultDb,
     billing_manager: Arc<Mutex<BillingManager>>,
     model_manager: Mutex<crate::model_manager::ModelManager>,
     dictionary_manager: Arc<Mutex<DictionaryManager>>,
@@ -963,7 +965,8 @@ impl VoiceWaveController {
         };
         let permission_manager = PermissionManager::new(&audio);
         let history_manager = HistoryManager::new()?;
-        VoiceVaultDb::new()?.initialize_schema()?;
+        let voice_vault = VoiceVaultDb::new()?;
+        voice_vault.initialize_schema()?;
         let billing_manager = BillingManager::new()?;
         let model_manager = crate::model_manager::ModelManager::new()?;
         let dictionary_manager = DictionaryManager::new()?;
@@ -992,6 +995,7 @@ impl VoiceWaveController {
             permission_manager: Mutex::new(permission_manager),
             insertion_engine: Mutex::new(InsertionEngine::default()),
             history_manager: Arc::new(Mutex::new(history_manager)),
+            voice_vault,
             billing_manager: Arc::new(Mutex::new(billing_manager)),
             model_manager: Mutex::new(model_manager),
             dictionary_manager: Arc::new(Mutex::new(dictionary_manager)),
@@ -3294,6 +3298,36 @@ impl VoiceWaveController {
             )
             .await;
             return Ok(());
+        }
+
+        let voice_vault_processing_mode = settings
+            .transcript_refinement
+            .mode
+            .processing_mode()
+            .to_string();
+        let mut initial_vault_entry = VoiceVaultLogEntry::fallback(
+            raw_decode_transcript.clone(),
+            voice_vault_processing_mode,
+        );
+        initial_vault_entry.cleaned_text = final_transcript.clone();
+        initial_vault_entry.final_edited_text = final_transcript.clone();
+        let voice_vault_log_id = self.voice_vault.insert_log(&initial_vault_entry).ok();
+
+        let refinement_outcome =
+            refine_transcript(&settings.transcript_refinement, final_transcript.clone()).await;
+        let mut refined_vault_entry = refinement_outcome.to_voice_vault_entry(None);
+        refined_vault_entry.raw_text = raw_decode_transcript.clone();
+        if refined_vault_entry.cleaned_text.trim().is_empty() {
+            refined_vault_entry.cleaned_text = final_transcript.clone();
+        }
+        if refined_vault_entry.final_edited_text.trim().is_empty() {
+            refined_vault_entry.final_edited_text = final_transcript.clone();
+        }
+        final_transcript = refined_vault_entry.final_edited_text.clone();
+        if let Some(log_id) = voice_vault_log_id {
+            let _ = self.voice_vault.update_log(log_id, &refined_vault_entry);
+        } else {
+            let _ = self.voice_vault.insert_log(&refined_vault_entry);
         }
 
         let post_started = Instant::now();

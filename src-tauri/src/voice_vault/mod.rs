@@ -1,14 +1,42 @@
 use directories::ProjectDirs;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 const VOICE_VAULT_DB_FILE: &str = "voice_vault.db";
 
+#[derive(Debug, Clone)]
 pub struct VoiceVaultDb {
     path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceVaultLogEntry {
+    pub audio_file_path: Option<String>,
+    pub processing_mode: String,
+    pub raw_text: String,
+    pub cleaned_text: String,
+    pub transformed_text: String,
+    pub final_edited_text: String,
+    pub transaction_status: String,
+}
+
+impl VoiceVaultLogEntry {
+    pub fn fallback(raw_text: impl Into<String>, processing_mode: impl Into<String>) -> Self {
+        let raw_text = raw_text.into();
+        Self {
+            audio_file_path: None,
+            processing_mode: processing_mode.into(),
+            raw_text: raw_text.clone(),
+            cleaned_text: raw_text.clone(),
+            transformed_text: String::new(),
+            final_edited_text: raw_text,
+            transaction_status: "Accepted".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -41,7 +69,7 @@ impl VoiceVaultDb {
             fs::create_dir_all(parent).map_err(VoiceVaultError::CreateDir)?;
         }
 
-        let connection = Connection::open(&self.path)?;
+        let connection = self.open_connection()?;
         connection.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -65,6 +93,82 @@ impl VoiceVaultDb {
 
         Ok(())
     }
+
+    pub fn insert_log(&self, entry: &VoiceVaultLogEntry) -> Result<i64, VoiceVaultError> {
+        let connection = self.open_connection()?;
+        connection.execute(
+            r#"
+            INSERT INTO voice_vault_logs (
+              audio_file_path,
+              processing_mode,
+              raw_text,
+              cleaned_text,
+              transformed_text,
+              final_edited_text,
+              transaction_status
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+            params![
+                normalize_optional_text(entry.audio_file_path.as_deref()),
+                entry.processing_mode.trim(),
+                &entry.raw_text,
+                &entry.cleaned_text,
+                &entry.transformed_text,
+                &entry.final_edited_text,
+                entry.transaction_status.trim(),
+            ],
+        )?;
+
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn update_log(&self, id: i64, entry: &VoiceVaultLogEntry) -> Result<(), VoiceVaultError> {
+        let connection = self.open_connection()?;
+        connection.execute(
+            r#"
+            UPDATE voice_vault_logs
+            SET
+              audio_file_path = ?1,
+              processing_mode = ?2,
+              raw_text = ?3,
+              cleaned_text = ?4,
+              transformed_text = ?5,
+              final_edited_text = ?6,
+              transaction_status = ?7
+            WHERE id = ?8
+            "#,
+            params![
+                normalize_optional_text(entry.audio_file_path.as_deref()),
+                entry.processing_mode.trim(),
+                &entry.raw_text,
+                &entry.cleaned_text,
+                &entry.transformed_text,
+                &entry.final_edited_text,
+                entry.transaction_status.trim(),
+                id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    fn open_connection(&self) -> Result<Connection, VoiceVaultError> {
+        let connection = Connection::open(&self.path)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        Ok(connection)
+    }
+}
+
+fn normalize_optional_text(value: Option<&str>) -> Option<String> {
+    value.and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 #[cfg(test)]
@@ -219,6 +323,99 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("user version should query");
         assert_eq!(user_version, 1);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn insert_log_maps_refinement_fields_to_phase0_columns() {
+        let db_path = temp_db_path();
+        let vault = VoiceVaultDb::from_path(&db_path);
+        vault.initialize_schema().expect("schema should initialize");
+
+        let id = vault
+            .insert_log(&VoiceVaultLogEntry {
+                audio_file_path: Some("  H:\\clips\\one.wav  ".to_string()),
+                processing_mode: "Code".to_string(),
+                raw_text: "raw".to_string(),
+                cleaned_text: "cleaned".to_string(),
+                transformed_text: "transformed".to_string(),
+                final_edited_text: "final".to_string(),
+                transaction_status: "Accepted".to_string(),
+            })
+            .expect("log should insert");
+
+        let connection = Connection::open(&db_path).expect("database should open");
+        let row = connection
+            .query_row(
+                r#"
+                SELECT
+                  id,
+                  audio_file_path,
+                  processing_mode,
+                  raw_text,
+                  cleaned_text,
+                  transformed_text,
+                  final_edited_text,
+                  transaction_status
+                FROM voice_vault_logs
+                WHERE id = ?1
+                "#,
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .expect("row should query");
+
+        assert_eq!(
+            row,
+            (
+                id,
+                Some("H:\\clips\\one.wav".to_string()),
+                "Code".to_string(),
+                "raw".to_string(),
+                "cleaned".to_string(),
+                "transformed".to_string(),
+                "final".to_string(),
+                "Accepted".to_string(),
+            )
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn fallback_log_insertions_are_repeatable_without_schema_changes() {
+        let db_path = temp_db_path();
+        let vault = VoiceVaultDb::from_path(&db_path);
+        vault.initialize_schema().expect("schema should initialize");
+
+        let first = vault
+            .insert_log(&VoiceVaultLogEntry::fallback("hello\nworld", "Raw"))
+            .expect("first fallback should insert");
+        let second = vault
+            .insert_log(&VoiceVaultLogEntry::fallback("hello\nworld", "Raw"))
+            .expect("second fallback should insert");
+
+        assert_ne!(first, second);
+
+        let connection = Connection::open(&db_path).expect("database should open");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM voice_vault_logs", [], |row| {
+                row.get(0)
+            })
+            .expect("count should query");
+        assert_eq!(count, 2);
 
         let _ = std::fs::remove_file(&db_path);
     }

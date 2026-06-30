@@ -125,6 +125,66 @@ impl Default for CodeModeSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum TranscriptRefinementProviderKind {
+    #[default]
+    Disabled,
+    Ollama,
+    OpenAiCompatible,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum TranscriptRefinementMode {
+    #[default]
+    Raw,
+    Clean,
+    Planning,
+    Code,
+    Reply,
+    DetailedNotes,
+}
+
+impl TranscriptRefinementMode {
+    pub fn processing_mode(self) -> &'static str {
+        match self {
+            Self::Raw => "Raw",
+            Self::Clean => "Clean",
+            Self::Planning => "Planning",
+            Self::Code => "Code",
+            Self::Reply => "Reply",
+            Self::DetailedNotes => "Detailed Notes",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TranscriptRefinementSettings {
+    pub enabled: bool,
+    pub provider: TranscriptRefinementProviderKind,
+    pub mode: TranscriptRefinementMode,
+    pub endpoint_url: String,
+    pub model: String,
+    pub timeout_ms: u64,
+    pub system_prompt: Option<String>,
+}
+
+impl Default for TranscriptRefinementSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: TranscriptRefinementProviderKind::Disabled,
+            mode: TranscriptRefinementMode::Raw,
+            endpoint_url: "http://127.0.0.1:11434/v1/chat/completions".to_string(),
+            model: "llama3.2:3b".to_string(),
+            timeout_ms: 2_500,
+            system_prompt: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct VoiceWaveSettings {
@@ -145,6 +205,7 @@ pub struct VoiceWaveSettings {
     pub code_mode: CodeModeSettings,
     pub pro_post_processing_enabled: bool,
     pub prefer_clipboard_only_for_terminals: bool,
+    pub transcript_refinement: TranscriptRefinementSettings,
 }
 
 impl Default for VoiceWaveSettings {
@@ -167,6 +228,7 @@ impl Default for VoiceWaveSettings {
             code_mode: CodeModeSettings::default(),
             pro_post_processing_enabled: true,
             prefer_clipboard_only_for_terminals: true,
+            transcript_refinement: TranscriptRefinementSettings::default(),
         }
     }
 }
@@ -233,7 +295,10 @@ fn normalize_active_model_id(active_model: &str) -> String {
     match active_model.trim() {
         // Every installable catalog model must be listed here, otherwise the
         // user's selection is silently reset to fw-small.en on settings load.
-        "fw-small.en" | "fw-large-v3" | "fw-large-v3-turbo" | "wcpp-small.en"
+        "fw-small.en"
+        | "fw-large-v3"
+        | "fw-large-v3-turbo"
+        | "wcpp-small.en"
         | "wcpp-large-v3-turbo" => active_model.trim().to_string(),
         "tiny.en" | "base.en" | "small.en" | "medium.en" => "fw-small.en".to_string(),
         _ => "fw-small.en".to_string(),
@@ -255,6 +320,21 @@ pub fn normalize_pro_settings(settings: &mut VoiceWaveSettings) {
     settings
         .active_domain_packs
         .retain(|pack| seen.insert(*pack));
+
+    settings.transcript_refinement.timeout_ms =
+        settings.transcript_refinement.timeout_ms.clamp(250, 30_000);
+    if settings
+        .transcript_refinement
+        .endpoint_url
+        .trim()
+        .is_empty()
+    {
+        settings.transcript_refinement.endpoint_url =
+            TranscriptRefinementSettings::default().endpoint_url;
+    }
+    if settings.transcript_refinement.model.trim().is_empty() {
+        settings.transcript_refinement.model = TranscriptRefinementSettings::default().model;
+    }
 }
 
 pub const LOCKED_TOGGLE_HOTKEY: &str = "Ctrl+Alt+X";
@@ -438,5 +518,19 @@ mod tests {
         assert!(loaded.prefer_clipboard_only_for_terminals);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn disabled_refinement_preserves_selected_provider() {
+        let mut settings = VoiceWaveSettings::default();
+        settings.transcript_refinement.enabled = false;
+        settings.transcript_refinement.provider = TranscriptRefinementProviderKind::Ollama;
+
+        normalize_pro_settings(&mut settings);
+
+        assert_eq!(
+            settings.transcript_refinement.provider,
+            TranscriptRefinementProviderKind::Ollama
+        );
     }
 }

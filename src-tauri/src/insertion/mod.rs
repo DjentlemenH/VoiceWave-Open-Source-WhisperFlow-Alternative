@@ -1027,6 +1027,7 @@ mod tests {
                 text: "ok".to_string(),
                 target_app: Some("Notepad".to_string()),
                 prefer_clipboard: true,
+                force_clipboard_only: false,
             })
             .expect("insert should work");
         assert!(result.success);
