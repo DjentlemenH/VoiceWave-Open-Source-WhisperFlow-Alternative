@@ -45,7 +45,7 @@ use crate::{
         finalize_pro_transcript, merge_incremental_transcript, sanitize_user_transcript,
         ProTranscriptOptions,
     },
-    transcript_refinement::refine_transcript,
+    transcript_refinement::{refine_transcript, TranscriptRefinementOutcome},
     voice_vault::{VoiceVaultDb, VoiceVaultError, VoiceVaultLogEntry},
 };
 use serde::{Deserialize, Serialize};
@@ -879,6 +879,49 @@ struct DictationSession {
 struct CorrectionSession {
     inserted_text: String,
     inserted_at_utc_ms: u64,
+}
+
+struct LiveRefinementLedger {
+    insert_text: String,
+    initial_entry: VoiceVaultLogEntry,
+    refined_entry: VoiceVaultLogEntry,
+}
+
+fn build_live_refinement_ledger(
+    raw_decode_transcript: String,
+    baseline_transcript: String,
+    processing_mode: String,
+    refinement_outcome: TranscriptRefinementOutcome,
+) -> LiveRefinementLedger {
+    let mut initial_entry =
+        VoiceVaultLogEntry::fallback(raw_decode_transcript.clone(), processing_mode);
+    initial_entry.cleaned_text = baseline_transcript.clone();
+    initial_entry.final_edited_text = baseline_transcript.clone();
+
+    let mut refined_entry = refinement_outcome.to_voice_vault_entry(None);
+    refined_entry.raw_text = raw_decode_transcript;
+    if refined_entry.cleaned_text.trim().is_empty() {
+        refined_entry.cleaned_text = baseline_transcript.clone();
+    }
+    if refined_entry.final_edited_text.trim().is_empty() {
+        refined_entry.final_edited_text = baseline_transcript.clone();
+    }
+    let insert_text = refined_entry.final_edited_text.clone();
+
+    LiveRefinementLedger {
+        insert_text,
+        initial_entry,
+        refined_entry,
+    }
+}
+
+fn record_live_refinement_ledger(voice_vault: &VoiceVaultDb, ledger: &LiveRefinementLedger) {
+    let voice_vault_log_id = voice_vault.insert_log(&ledger.initial_entry).ok();
+    if let Some(log_id) = voice_vault_log_id {
+        let _ = voice_vault.update_log(log_id, &ledger.refined_entry);
+    } else {
+        let _ = voice_vault.insert_log(&ledger.refined_entry);
+    }
 }
 
 pub struct VoiceWaveController {
@@ -3305,30 +3348,16 @@ impl VoiceWaveController {
             .mode
             .processing_mode()
             .to_string();
-        let mut initial_vault_entry = VoiceVaultLogEntry::fallback(
-            raw_decode_transcript.clone(),
-            voice_vault_processing_mode,
-        );
-        initial_vault_entry.cleaned_text = final_transcript.clone();
-        initial_vault_entry.final_edited_text = final_transcript.clone();
-        let voice_vault_log_id = self.voice_vault.insert_log(&initial_vault_entry).ok();
-
         let refinement_outcome =
             refine_transcript(&settings.transcript_refinement, final_transcript.clone()).await;
-        let mut refined_vault_entry = refinement_outcome.to_voice_vault_entry(None);
-        refined_vault_entry.raw_text = raw_decode_transcript.clone();
-        if refined_vault_entry.cleaned_text.trim().is_empty() {
-            refined_vault_entry.cleaned_text = final_transcript.clone();
-        }
-        if refined_vault_entry.final_edited_text.trim().is_empty() {
-            refined_vault_entry.final_edited_text = final_transcript.clone();
-        }
-        final_transcript = refined_vault_entry.final_edited_text.clone();
-        if let Some(log_id) = voice_vault_log_id {
-            let _ = self.voice_vault.update_log(log_id, &refined_vault_entry);
-        } else {
-            let _ = self.voice_vault.insert_log(&refined_vault_entry);
-        }
+        let live_refinement_ledger = build_live_refinement_ledger(
+            raw_decode_transcript.clone(),
+            final_transcript.clone(),
+            voice_vault_processing_mode,
+            refinement_outcome,
+        );
+        final_transcript = live_refinement_ledger.insert_text.clone();
+        record_live_refinement_ledger(&self.voice_vault, &live_refinement_ledger);
 
         let post_started = Instant::now();
         let _ = app.emit(
@@ -3988,16 +4017,19 @@ fn percentile_index(len: usize, percentile: f32) -> usize {
 mod tests {
     use super::{
         asr_integrity_metrics, build_terminology_hint_from_texts, clamp_vad_threshold,
+        build_live_refinement_ledger,
         classify_insertion_target, decode_mode_key, decode_mode_rank, derive_correction_candidates,
         effective_release_watchdog_threshold_ms, floor_decode_mode, insertion_method_key,
         is_likely_low_quality_input_name, now_utc_ms, release_watchdog_recovered,
-        push_release_allowed, push_to_talk_release_decision,
+        push_release_allowed, push_to_talk_release_decision, record_live_refinement_ledger,
         should_reject_low_confidence_transcript_as_no_speech, DictationStartTrigger,
         PushReleaseDecision, MAX_VAD_THRESHOLD, MIN_VAD_THRESHOLD, RECOMMENDED_VAD_THRESHOLD,
     };
     use crate::audio::AudioQualityBand;
     use crate::insertion::InsertionMethod;
     use crate::settings::DecodeMode;
+    use crate::transcript_refinement::TranscriptRefinementOutcome;
+    use crate::voice_vault::VoiceVaultDb;
     use std::time::Duration;
 
     #[test]
@@ -4012,6 +4044,57 @@ mod tests {
         let a = now_utc_ms();
         let b = now_utc_ms();
         assert!(b >= a);
+    }
+
+    #[test]
+    fn live_refinement_ledger_fallback_preserves_raw_insertion_text() {
+        let ledger = build_live_refinement_ledger(
+            "raw asr words".to_string(),
+            "Raw ASR words.".to_string(),
+            "Clean".to_string(),
+            TranscriptRefinementOutcome {
+                raw_text: "Raw ASR words.".to_string(),
+                cleaned_text: "Raw ASR words.".to_string(),
+                transformed_text: String::new(),
+                final_edited_text: "Raw ASR words.".to_string(),
+                processing_mode: "Clean".to_string(),
+                transaction_status: "Rejected".to_string(),
+                error_message: Some("provider offline".to_string()),
+            },
+        );
+
+        assert_eq!(ledger.insert_text, "Raw ASR words.");
+        assert_eq!(ledger.initial_entry.raw_text, "raw asr words");
+        assert_eq!(ledger.initial_entry.cleaned_text, "Raw ASR words.");
+        assert_eq!(ledger.refined_entry.raw_text, "raw asr words");
+        assert_eq!(ledger.refined_entry.cleaned_text, "Raw ASR words.");
+        assert_eq!(ledger.refined_entry.transformed_text, "");
+        assert_eq!(ledger.refined_entry.final_edited_text, "Raw ASR words.");
+        assert_eq!(ledger.refined_entry.transaction_status, "Rejected");
+    }
+
+    #[test]
+    fn live_refinement_ledger_recording_is_best_effort_on_database_failure() {
+        let ledger = build_live_refinement_ledger(
+            "raw".to_string(),
+            "Raw.".to_string(),
+            "Planning".to_string(),
+            TranscriptRefinementOutcome {
+                raw_text: "Raw.".to_string(),
+                cleaned_text: "Raw.".to_string(),
+                transformed_text: String::new(),
+                final_edited_text: "Raw.".to_string(),
+                processing_mode: "Planning".to_string(),
+                transaction_status: "Rejected".to_string(),
+                error_message: Some("timeout".to_string()),
+            },
+        );
+        let bad_db_path = std::env::temp_dir();
+        let bad_db = VoiceVaultDb::from_path(&bad_db_path);
+
+        record_live_refinement_ledger(&bad_db, &ledger);
+
+        assert_eq!(ledger.insert_text, "Raw.");
     }
 
     #[test]

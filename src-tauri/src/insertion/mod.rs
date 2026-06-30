@@ -1296,13 +1296,13 @@ mod tests {
     #[test]
     fn without_force_clipboard_only_gui_uses_direct_insertion() {
         let backend = DeterministicMatrixBackend::new()
-            .with_active_app(Some("Google Chrome"));
+            .with_active_app(Some("Notepad"));
         let mut engine = InsertionEngine::new(Box::new(backend));
 
         let result = engine
             .insert_text(InsertTextRequest {
-                text: "hello chrome".to_string(),
-                target_app: Some("Google Chrome".to_string()),
+                text: "hello notepad".to_string(),
+                target_app: Some("Notepad".to_string()),
                 prefer_clipboard: false,
                 force_clipboard_only: false,
             })
