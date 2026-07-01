@@ -281,7 +281,7 @@ fn active_workflow_preset(settings: &TranscriptRefinementSettings) -> WorkflowPr
     if !preset.temperature.is_finite() {
         preset.temperature = default_preset.temperature;
     }
-    preset.temperature = preset.temperature.clamp(0.0, 2.0);
+    preset.temperature = preset.temperature.clamp(0.0, 1.5);
     if preset.max_tokens == 0 {
         preset.max_tokens = default_preset.max_tokens;
     }

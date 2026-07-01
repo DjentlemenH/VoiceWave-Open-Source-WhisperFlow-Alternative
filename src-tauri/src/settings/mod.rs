@@ -455,7 +455,7 @@ fn normalize_workflow_preset(preset: &mut WorkflowPromptPreset, default: &Workfl
     if !preset.temperature.is_finite() {
         preset.temperature = default.temperature;
     }
-    preset.temperature = preset.temperature.clamp(0.0, 2.0);
+    preset.temperature = preset.temperature.clamp(0.0, 1.5);
     if preset.max_tokens == 0 {
         preset.max_tokens = default.max_tokens;
     }
@@ -805,7 +805,7 @@ mod tests {
         let code = &loaded.transcript_refinement.workflow_presets.code;
 
         assert_eq!(planning.system_prompt, PLANNING_SYSTEM_PROMPT);
-        assert_eq!(planning.temperature, 2.0);
+        assert_eq!(planning.temperature, 1.5);
         assert_eq!(planning.max_tokens, 1_024);
         assert_eq!(planning.timeout_ms, 250);
         assert_eq!(code.temperature, 0.0);
