@@ -175,6 +175,19 @@ impl VoiceVaultDb {
         Ok(())
     }
 
+    pub fn update_transaction_status(
+        &self,
+        id: i64,
+        transaction_status: &str,
+    ) -> Result<(), VoiceVaultError> {
+        let connection = self.open_connection()?;
+        connection.execute(
+            "UPDATE voice_vault_logs SET transaction_status = ?1 WHERE id = ?2",
+            params![transaction_status.trim(), id],
+        )?;
+        Ok(())
+    }
+
     pub fn rejected_audio_paths_older_than_hours(
         &self,
         hours: i64,

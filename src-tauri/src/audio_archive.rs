@@ -149,17 +149,35 @@ pub fn spawn_archive_audio_for_log(
     sample_rate: u32,
 ) {
     let _ = tokio::task::spawn_blocking(move || {
-        if let Err(err) = archive
-            .write_wav_file(&plan, &samples, sample_rate)
-            .and_then(|()| {
-                voice_vault
-                    .update_audio_file_path(log_id, &plan.relative_path)
-                    .map_err(AudioArchiveError::VoiceVault)
-            })
+        if let Err(err) =
+            archive_audio_for_log(&archive, &voice_vault, log_id, &plan, &samples, sample_rate)
         {
             eprintln!("voicewave: audio archive failed for log {log_id}: {err}");
         }
     });
+}
+
+fn archive_audio_for_log(
+    archive: &AudioArchive,
+    voice_vault: &VoiceVaultDb,
+    log_id: i64,
+    plan: &ArchiveAudioPlan,
+    samples: &[f32],
+    sample_rate: u32,
+) -> Result<(), AudioArchiveError> {
+    let result = archive
+        .write_wav_file(plan, samples, sample_rate)
+        .and_then(|()| {
+            voice_vault
+                .update_audio_file_path(log_id, &plan.relative_path)
+                .map_err(AudioArchiveError::VoiceVault)
+        });
+
+    if result.is_err() {
+        let _ = voice_vault.update_transaction_status(log_id, "ArchiveFailed");
+    }
+
+    result
 }
 
 pub fn spawn_rejected_audio_cleanup(archive: AudioArchive, voice_vault: VoiceVaultDb) {
@@ -222,24 +240,31 @@ mod tests {
     use rusqlite::Connection;
 
     fn temp_root() -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "voicewave-audio-archive-{}",
-            now_utc_ms_for_archive()
-        ))
+        std::env::temp_dir().join(format!("voicewave-audio-archive-{}", unique_test_suffix()))
     }
 
     fn temp_db_path() -> PathBuf {
         std::env::temp_dir().join(format!(
             "voicewave-audio-archive-{}.db",
-            now_utc_ms_for_archive()
+            unique_test_suffix()
         ))
+    }
+
+    fn unique_test_suffix() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_nanos()
     }
 
     #[test]
     fn plan_uses_expected_h_drive_audio_root() {
         let archive = AudioArchive::new();
         let plan = archive.plan_for_session(42, 1_782_836_000_000);
-        assert_eq!(plan.absolute_path, PathBuf::from(r"H:\VoiceVault\Audio\voicewave-42-1782836000000.wav"));
+        assert_eq!(
+            plan.absolute_path,
+            PathBuf::from(r"H:\VoiceVault\Audio\voicewave-42-1782836000000.wav")
+        );
         assert_eq!(plan.relative_path, r"Audio\voicewave-42-1782836000000.wav");
     }
 
@@ -327,6 +352,32 @@ mod tests {
             .expect("path should read");
         assert_eq!(stored, None);
         let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn archive_failure_marks_log_status_without_panicking() {
+        let root = temp_root();
+        fs::write(&root, b"not a directory").expect("root file should write");
+        let db_path = temp_db_path();
+        let archive = AudioArchive::from_root(&root);
+        let vault = VoiceVaultDb::from_path(&db_path);
+        vault.initialize_schema().expect("schema should initialize");
+        let log_id = vault
+            .insert_log(&VoiceVaultLogEntry::fallback("hello", "Raw"))
+            .expect("log should insert");
+        let plan = archive.plan_for_session(9, 9012);
+
+        let result = archive_audio_for_log(&archive, &vault, log_id, &plan, &[0.0], 16_000);
+
+        assert!(result.is_err());
+        let entry = vault
+            .get_log(log_id)
+            .expect("log should read")
+            .expect("log should exist");
+        assert_eq!(entry.transaction_status, "ArchiveFailed");
+        assert_eq!(entry.audio_file_path, None);
+        let _ = fs::remove_file(root);
         let _ = fs::remove_file(db_path);
     }
 }
