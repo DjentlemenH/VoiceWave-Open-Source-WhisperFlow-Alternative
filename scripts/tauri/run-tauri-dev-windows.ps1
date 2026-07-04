@@ -64,7 +64,13 @@ function Resolve-MingwRuntimeDirectory {
     if ([string]::IsNullOrWhiteSpace($candidate)) {
       continue
     }
-    if (-not (Test-Path $candidate)) {
+    try {
+      $candidateExists = Test-Path $candidate
+    }
+    catch {
+      continue
+    }
+    if (-not $candidateExists) {
       continue
     }
     if (Test-Path (Join-Path $candidate "libstdc++-6.dll")) {
