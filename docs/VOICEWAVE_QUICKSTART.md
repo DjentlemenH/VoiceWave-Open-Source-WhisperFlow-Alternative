@@ -33,6 +33,14 @@ VoiceWave shortcuts created on this machine:
 - Start Menu: `C:\Users\H-Haw\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\VoiceWave.lnk`
 - Desktop: `C:\Users\H-Haw\OneDrive\Desktop\VoiceWave.lnk`
 
+Other installed tools with shortcuts:
+
+- `OpenHands Agent Canvas.lnk`
+- `AnythingLLM.lnk`
+- `Beads.lnk`
+
+All three live in the Start Menu `Programs` folder so they can be found by search.
+
 ## Important Paths
 
 - `src-tauri/src/state.rs` - main Tauri backend flow and dictation pipeline
