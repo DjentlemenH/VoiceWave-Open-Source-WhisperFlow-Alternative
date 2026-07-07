@@ -24,6 +24,15 @@ npm run faster-whisper:setup:cpu
 npm run tauri:dev
 ```
 
+## Shortcut Rule
+
+If the app is installed, it should also have a launcher shortcut.
+
+VoiceWave shortcuts created on this machine:
+
+- Start Menu: `C:\Users\H-Haw\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\VoiceWave.lnk`
+- Desktop: `C:\Users\H-Haw\OneDrive\Desktop\VoiceWave.lnk`
+
 ## Important Paths
 
 - `src-tauri/src/state.rs` - main Tauri backend flow and dictation pipeline
@@ -52,4 +61,3 @@ npm run tauri:check
 ## Current Branch
 
 The active work branch is `feature/local-transcript-refinement`.
-
