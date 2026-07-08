@@ -26,12 +26,24 @@ npm run tauri:dev
 
 ## Shortcut Rule
 
-If the app is installed, it should also have a launcher shortcut.
-
-VoiceWave shortcuts created on this machine:
+VoiceWave shortcuts on this machine:
 
 - Start Menu: `C:\Users\H-Haw\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\VoiceWave.lnk`
 - Desktop: `C:\Users\H-Haw\OneDrive\Desktop\VoiceWave.lnk`
+
+These shortcuts target the standalone production release binary at `H:\Repositories\VoiceWave-VoiceVault\src-tauri\target\release\voicewave_core.exe` (with embedded frontend), allowing you to run the app offline without a terminal or a dev server running.
+
+If you ever need to rebuild the standalone release binary, run:
+```powershell
+# Rebuilds release binary to C:\voicewave-tauri\target-gnu-build and skips installer creation
+powershell -ExecutionPolicy Bypass -File ./scripts/tauri/run-tauri-build-windows.ps1 --bundles nsis --no-bundle
+
+# Copy output files back into the repo target directory so shortcuts work
+$src = "C:\voicewave-tauri\target-gnu-build\release"
+$dst = "H:\Repositories\VoiceWave-VoiceVault\src-tauri\target\release"
+Copy-Item "$src\voicewave_core.exe", "$src\*.dll" $dst -Force
+Copy-Item "$src\faster-whisper\worker.py" "$dst\faster-whisper\worker.py" -Force
+```
 
 Other installed tools with shortcuts:
 
