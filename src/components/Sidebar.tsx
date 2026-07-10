@@ -4,10 +4,10 @@ export function Sidebar() {
   return (
     <aside className="w-full max-w-[260px] border-r border-pine-100 bg-pine-50/40 px-4 py-6">
       <div className="mb-7 flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-pine-700 text-white">V</div>
+        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-pine-700 text-white">H</div>
         <div>
-          <p className="font-display text-2xl leading-none text-pine-900">VoiceWave</p>
-          <p className="text-xs uppercase tracking-[0.18em] text-pine-700">Local Core</p>
+          <p className="font-display text-2xl leading-none text-pine-900">HawkFlow</p>
+          <p className="text-xs uppercase tracking-[0.18em] text-pine-700">Local Workspace</p>
         </div>
       </div>
       <nav className="space-y-2">

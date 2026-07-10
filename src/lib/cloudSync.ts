@@ -311,7 +311,7 @@ function readFirebaseMessage(error: unknown): string {
 }
 
 function toProfile(user: User, workspaceRole = "Personal Workspace"): CloudProfile {
-  const fallbackName = user.email?.split("@")[0] ?? "VoiceWave User";
+  const fallbackName = user.email?.split("@")[0] ?? "HawkFlow User";
   return {
     uid: user.uid,
     name: user.displayName ?? fallbackName,
@@ -345,7 +345,7 @@ export async function signUpCloud(input: {
       email,
       input.password
     );
-    const name = nameInput || credential.user.email?.split("@")[0] || "VoiceWave User";
+    const name = nameInput || credential.user.email?.split("@")[0] || "HawkFlow User";
     await updateProfile(credential.user, { displayName: name });
 
     const profile = toProfile(credential.user, workspaceRole || "Personal Workspace");

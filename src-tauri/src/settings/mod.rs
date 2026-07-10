@@ -349,7 +349,7 @@ pub struct SettingsStore {
 impl SettingsStore {
     pub fn new() -> Result<Self, SettingsError> {
         let proj_dirs =
-            ProjectDirs::from("com", "voicewave", "localcore").ok_or(SettingsError::AppData)?;
+            ProjectDirs::from("com", "hawkflow", "localcore").ok_or(SettingsError::AppData)?;
         let path = proj_dirs.config_dir().join("settings.json");
         Ok(Self { path })
     }
@@ -481,7 +481,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be valid")
             .as_nanos();
-        std::env::temp_dir().join(format!("voicewave-settings-{ts}.json"))
+        std::env::temp_dir().join(format!("hawkflow-settings-{ts}.json"))
     }
 
     #[test]

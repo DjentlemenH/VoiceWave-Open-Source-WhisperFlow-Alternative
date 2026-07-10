@@ -734,8 +734,8 @@ function App() {
 
     const derivedName =
       authMode === "signup"
-        ? authName.trim() || normalizedEmail.split("@")[0] || "VoiceWave User"
-        : demoProfile?.name || normalizedEmail.split("@")[0] || "VoiceWave User";
+        ? authName.trim() || normalizedEmail.split("@")[0] || "HawkFlow User"
+        : demoProfile?.name || normalizedEmail.split("@")[0] || "HawkFlow User";
     setDemoProfile({
       name: derivedName,
       email: normalizedEmail,
@@ -1064,7 +1064,7 @@ function App() {
               <section className="vw-panel vw-panel-soft">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="vw-kicker">VoiceWave Pro</p>
+                    <p className="vw-kicker">HawkFlow Pro</p>
                     <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Power Features for Coders + Students</h3>
                     <p className="mt-1 text-sm text-[#71717A]">
                       Initial release offer: everyone gets advanced formatting, domain packs, code mode, and power history tools from day one.
@@ -1852,7 +1852,7 @@ function App() {
                   <div>
                     <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Pro Tools Modes</h3>
                     <p className="mt-1 text-sm text-[#71717A]">
-                      Pick one mode and VoiceWave reconfigures output behavior for that workflow.
+                      Pick one mode and HawkFlow reconfigures output behavior for that workflow.
                     </p>
                   </div>
                   <span className="vw-chip vw-chip-accent">Pro Active</span>
@@ -2335,7 +2335,7 @@ function App() {
                       className="vw-auth-input mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
                       value={authEmail}
                       onChange={(event) => setAuthEmail(event.target.value)}
-                      placeholder="you@voicewave.app"
+                      placeholder="you@hawkflow.app"
                       type="email"
                       required
                     />

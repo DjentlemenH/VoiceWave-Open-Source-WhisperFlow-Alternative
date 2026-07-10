@@ -5,7 +5,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$diagPath = Join-Path $env:APPDATA "voicewave\localcore\config\diagnostics.json"
+$diagPath = Join-Path $env:APPDATA "hawkflow\localcore\config\diagnostics.json"
 $phaseAPath = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..\..")) "docs\phaseA\artifacts\cpu-latency-2026-02-11.json"
 $shortAudioLimitMs = 3000
 $mediumAudioLimitMs = 8000

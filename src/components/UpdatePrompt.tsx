@@ -45,7 +45,7 @@ export function UpdatePrompt() {
       } catch (err) {
         // A failed check (offline, rate-limited, etc.) should never interrupt
         // the user — just stay silent and try again next launch.
-        console.warn("VoiceWave update check failed:", err);
+        console.warn("HawkFlow update check failed:", err);
       }
     })();
     return () => {
@@ -97,7 +97,7 @@ export function UpdatePrompt() {
                 Update available
               </h3>
               <p className="mt-0.5 text-sm text-[#71717A]">
-                VoiceWave {update.version} is ready to install.
+                HawkFlow {update.version} is ready to install.
               </p>
             </div>
           </div>

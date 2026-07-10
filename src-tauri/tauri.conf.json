@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "VoiceWave Local Core",
+  "productName": "HawkFlow",
   "version": "0.4.0",
-  "identifier": "com.voicewave.localcore",
+  "identifier": "com.hawkflow.localcore",
   "build": {
     "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --port 5173 --strictPort",
     "beforeBuildCommand": "npm run build",
@@ -13,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "VoiceWave Local Core",
+        "title": "HawkFlow",
         "width": 1400,
         "height": 920,
         "minWidth": 1024,
@@ -27,7 +27,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/releases/latest/download/latest.json"
+        "https://github.com/DjentlemenH/VoiceWave-Open-Source-WhisperFlow-Alternative/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFDMDdGQ0ZEOTdGNUQ2NjcKUldSbjF2V1gvZndISE9HTWNQaU5SbjVGUk01QkJlbzVFaWlRWU1PbzFiWm5MS0kwdWhoV0RqSEkK",
       "windows": {
@@ -49,7 +49,7 @@
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",
-        "startMenuFolder": "VoiceWave"
+        "startMenuFolder": "HawkFlow"
       },
       "wix": {
         "language": "en-US"

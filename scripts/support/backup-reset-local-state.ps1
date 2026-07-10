@@ -8,13 +8,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$sourceRoot = Join-Path $env:APPDATA "voicewave\localcore"
+$sourceRoot = Join-Path $env:APPDATA "hawkflow\localcore"
 if (-not (Test-Path $sourceRoot)) {
-  throw "VoiceWave local state was not found at $sourceRoot"
+  throw "HawkFlow local state was not found at $sourceRoot"
 }
 
 if ([string]::IsNullOrWhiteSpace($BackupRoot)) {
-  $BackupRoot = Join-Path $env:USERPROFILE "Desktop\voicewave-recovery-backups"
+  $BackupRoot = Join-Path $env:USERPROFILE "Desktop\hawkflow-recovery-backups"
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"

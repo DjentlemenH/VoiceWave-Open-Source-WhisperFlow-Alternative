@@ -866,7 +866,7 @@ fn current_exe_dir() -> Option<PathBuf> {
 }
 
 fn app_support_dir() -> Option<PathBuf> {
-    ProjectDirs::from("com", "voicewave", "localcore")
+    ProjectDirs::from("com", "hawkflow", "localcore")
         .map(|dirs| dirs.data_dir().join("runtime-support"))
 }
 
@@ -1130,7 +1130,7 @@ fn set_fw_gpu_persistently_disabled(disabled: bool) {
 }
 
 fn fw_gpu_disable_marker_path() -> Option<PathBuf> {
-    ProjectDirs::from("com", "voicewave", "localcore")
+    ProjectDirs::from("com", "hawkflow", "localcore")
         .map(|dirs| dirs.config_dir().join(FW_GPU_DISABLED_MARKER))
 }
 
@@ -1539,10 +1539,10 @@ fn hf_home_dir() -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
-    if let Some(proj_dirs) = ProjectDirs::from("com", "voicewave", "localcore") {
+    if let Some(proj_dirs) = ProjectDirs::from("com", "hawkflow", "localcore") {
         return proj_dirs.data_dir().join("faster-whisper-cache");
     }
-    std::env::temp_dir().join("voicewave-faster-whisper-cache")
+    std::env::temp_dir().join("hawkflow-faster-whisper-cache")
 }
 
 fn now_utc_ms() -> u64 {

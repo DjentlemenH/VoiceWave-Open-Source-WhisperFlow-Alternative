@@ -52,7 +52,7 @@ pub enum VoiceVaultError {
 impl VoiceVaultDb {
     pub fn new() -> Result<Self, VoiceVaultError> {
         let proj_dirs =
-            ProjectDirs::from("com", "voicewave", "localcore").ok_or(VoiceVaultError::AppData)?;
+            ProjectDirs::from("com", "hawkflow", "localcore").ok_or(VoiceVaultError::AppData)?;
         Ok(Self::from_path(
             proj_dirs.data_dir().join(VOICE_VAULT_DB_FILE),
         ))

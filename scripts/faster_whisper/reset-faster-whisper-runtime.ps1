@@ -42,8 +42,14 @@ function Backup-FileIfPresent {
   Copy-Item -LiteralPath $SourcePath -Destination $dest -Force
 }
 
-function Get-VoiceWaveRoots {
+function Get-HawkFlowRoots {
   $candidates = @(
+    (Join-Path $env:APPDATA "hawkflow\localcore"),
+    (Join-Path $env:APPDATA "HawkFlow\localcore"),
+    (Join-Path $env:APPDATA "com\hawkflow\localcore"),
+    (Join-Path $env:LOCALAPPDATA "com.hawkflow.localcore"),
+    (Join-Path $env:LOCALAPPDATA "hawkflow\localcore"),
+    (Join-Path $env:LOCALAPPDATA "HawkFlow\localcore"),
     (Join-Path $env:APPDATA "voicewave\localcore"),
     (Join-Path $env:APPDATA "VoiceWave\localcore"),
     (Join-Path $env:APPDATA "com\voicewave\localcore"),
@@ -56,9 +62,9 @@ function Get-VoiceWaveRoots {
     Select-Object -Unique
 }
 
-$roots = Get-VoiceWaveRoots
+$roots = Get-HawkFlowRoots
 if ($roots.Count -eq 0) {
-  Write-Host "No VoiceWave runtime roots found. Nothing to reset."
+  Write-Host "No HawkFlow runtime roots found. Nothing to reset."
   exit 0
 }
 

@@ -215,10 +215,10 @@ function Stop-StaleViteDevProcesses([string]$repoPath) {
   }
 }
 
-function Stop-StaleVoiceWaveRuntimeProcesses {
+function Stop-StaleHawkFlowRuntimeProcesses {
   $stale = Get-CimInstance Win32_Process |
     Where-Object {
-      $_.Name -in @("voicewave_core.exe", "cargo.exe", "rustc.exe") -and
+      $_.Name -in @("hawkflow_core.exe", "cargo.exe", "rustc.exe") -and
       $_.CommandLine -and
       (
         $_.CommandLine -match "voicewave-tauri-target" -or
@@ -325,7 +325,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Ensure-GnuRustToolchain
 $mingwRuntimeDir = Add-MingwToPathIfAvailable
 Stop-StaleViteDevProcesses $repoRoot
-Stop-StaleVoiceWaveRuntimeProcesses
+Stop-StaleHawkFlowRuntimeProcesses
 Ensure-NoSpaceTargetDir
 Ensure-DevRuntimeDlls -repoRoot $repoRoot -cargoTargetDir $env:CARGO_TARGET_DIR -mingwRuntimeDir $mingwRuntimeDir
 Configure-FasterWhisperRuntime -repoRoot $repoRoot

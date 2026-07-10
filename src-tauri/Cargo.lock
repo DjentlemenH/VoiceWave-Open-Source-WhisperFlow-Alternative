@@ -1711,6 +1711,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "hawkflow_core"
+version = "0.4.0"
+dependencies = [
+ "aes-gcm",
+ "arboard",
+ "base64 0.22.1",
+ "cpal",
+ "directories",
+ "ed25519-dalek",
+ "rand 0.8.5",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-process",
+ "tauri-plugin-updater",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "ureq",
+ "whisper-rs",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5077,33 +5104,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "voicewave_core"
-version = "0.4.0"
-dependencies = [
- "aes-gcm",
- "arboard",
- "base64 0.22.1",
- "cpal",
- "directories",
- "ed25519-dalek",
- "rand 0.8.5",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-process",
- "tauri-plugin-updater",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "ureq",
- "whisper-rs",
- "windows-sys 0.59.0",
-]
 
 [[package]]
 name = "vswhom"

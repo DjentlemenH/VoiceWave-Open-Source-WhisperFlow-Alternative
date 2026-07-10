@@ -116,7 +116,7 @@ fn ensure_pill_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, St
 
     let builder =
         WebviewWindowBuilder::new(app, PILL_WINDOW_LABEL, WebviewUrl::App("pill.html".into()))
-            .title("VoiceWave Pill")
+            .title("HawkFlow Pill")
             .inner_size(PILL_WINDOW_COMPACT_WIDTH, PILL_WINDOW_COMPACT_HEIGHT)
             .resizable(false)
             .maximizable(false)
@@ -230,10 +230,10 @@ fn configure_main_window_close_behavior(app: &tauri::AppHandle, hide_to_tray: bo
 
 #[cfg(feature = "desktop")]
 fn configure_system_tray(app: &tauri::AppHandle) -> Result<(), String> {
-    let show_item = MenuItemBuilder::with_id(TRAY_SHOW_ID, "Open VoiceWave")
+    let show_item = MenuItemBuilder::with_id(TRAY_SHOW_ID, "Open HawkFlow")
         .build(app)
         .map_err(|err| format!("failed to build tray show item: {err}"))?;
-    let quit_item = MenuItemBuilder::with_id(TRAY_QUIT_ID, "Quit VoiceWave")
+    let quit_item = MenuItemBuilder::with_id(TRAY_QUIT_ID, "Quit HawkFlow")
         .build(app)
         .map_err(|err| format!("failed to build tray quit item: {err}"))?;
     let menu = MenuBuilder::new(app)
@@ -248,7 +248,7 @@ fn configure_system_tray(app: &tauri::AppHandle) -> Result<(), String> {
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
-        .tooltip("VoiceWave")
+        .tooltip("HawkFlow")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app: &tauri::AppHandle, event: tauri::menu::MenuEvent| {

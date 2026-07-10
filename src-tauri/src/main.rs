@@ -7,5 +7,5 @@ fn main() {
 
 #[cfg(not(feature = "desktop"))]
 fn main() {
-    eprintln!("VoiceWave desktop runtime disabled (built without 'desktop' feature).");
+    eprintln!("HawkFlow desktop runtime disabled (built without 'desktop' feature).");
 }

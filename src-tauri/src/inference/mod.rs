@@ -122,7 +122,7 @@ fn fw_debug_log_path() -> Option<PathBuf> {
         }
     }
 
-    ProjectDirs::from("com", "voicewave", "localcore")
+    ProjectDirs::from("com", "hawkflow", "localcore")
         .map(|dirs| dirs.data_dir().join("logs").join("fw-gpu-debug.log"))
 }
 
